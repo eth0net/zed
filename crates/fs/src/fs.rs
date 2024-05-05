@@ -3,7 +3,6 @@ use anyhow::{anyhow, Result};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-use async_tar::Archive;
 use futures::{future::BoxFuture, AsyncRead, Stream, StreamExt};
 use git::repository::{GitRepository, RealGitRepository};
 use git2::Repository as LibGitRepository;
@@ -41,10 +40,15 @@ pub trait Fs: Send + Sync {
         path: &Path,
         content: Pin<&mut (dyn AsyncRead + Send)>,
     ) -> Result<()>;
-    async fn extract_tar_file(
+    async fn extract_tar_gz_file(
         &self,
         path: &Path,
-        content: Archive<Pin<&mut (dyn AsyncRead + Send)>>,
+        content: Pin<&mut (dyn AsyncRead + Send)>,
+    ) -> Result<()>;
+    async fn extract_zip_file(
+        &self,
+        dst: &Path,
+        content: Pin<&mut (dyn AsyncRead + Send)>,
     ) -> Result<()>;
     async fn copy_file(&self, source: &Path, target: &Path, options: CopyOptions) -> Result<()>;
     async fn rename(&self, source: &Path, target: &Path, options: RenameOptions) -> Result<()>;
@@ -168,12 +172,21 @@ impl Fs for RealFs {
         Ok(())
     }
 
-    async fn extract_tar_file(
+    async fn extract_tar_gz_file(
         &self,
         path: &Path,
-        content: Archive<Pin<&mut (dyn AsyncRead + Send)>>,
+        content: Pin<&mut (dyn AsyncRead + Send)>,
     ) -> Result<()> {
-        content.unpack(path).await?;
+        archive::extract_tar_gz(path, content).await?;
+        Ok(())
+    }
+
+    async fn extract_zip_file(
+        &self,
+        dst: &Path,
+        content: Pin<&mut (dyn AsyncRead + Send)>,
+    ) -> Result<()> {
+        archive::extract_zip(dst, content).await?;
         Ok(())
     }
 
@@ -1136,11 +1149,15 @@ impl Fs for FakeFs {
         Ok(())
     }
 
-    async fn extract_tar_file(
+    async fn extract_tar_gz_file(
         &self,
         path: &Path,
-        content: Archive<Pin<&mut (dyn AsyncRead + Send)>>,
+        content: Pin<&mut (dyn AsyncRead + Send)>,
     ) -> Result<()> {
+        let body = async_compression::futures::bufread::GzipDecoder::new(
+            futures::io::BufReader::new(content),
+        );
+        let content = async_tar::Archive::new(body);
         let mut entries = content.entries()?;
         while let Some(entry) = entries.next().await {
             let mut entry = entry?;
@@ -1152,6 +1169,36 @@ impl Fs for FakeFs {
                 self.write_file_internal(&path, bytes)?;
             }
         }
+        Ok(())
+    }
+
+    async fn extract_zip_file(
+        &self,
+        dst: &Path,
+        content: Pin<&mut (dyn AsyncRead + Send)>,
+    ) -> Result<()> {
+        let mut reader =
+            async_zip::base::read::stream::ZipFileReader::new(futures::io::BufReader::new(content));
+
+        let dst = &dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
+        while let Some(mut item) = reader.next_with_entry().await? {
+            let entry_reader = item.reader_mut();
+            let entry = entry_reader.entry();
+            let path = dst.join(entry.filename().as_str().unwrap());
+
+            if entry.dir().unwrap() {
+                self.create_dir(&path).await?;
+            } else {
+                let parent_dir = path.parent().expect("failed to get parent directory");
+                self.create_dir(parent_dir).await?;
+                let mut bytes = Vec::new();
+                entry_reader.read_to_end(&mut bytes).await?;
+                self.write_file_internal(&path, bytes)?;
+            }
+
+            reader = item.skip().await?;
+        }
+
         Ok(())
     }
 
