@@ -90,11 +90,8 @@ impl WindowsPlatformInner {
 #[derive(Default)]
 struct Callbacks {
     open_urls: Option<Box<dyn FnMut(Vec<String>)>>,
-    become_active: Option<Box<dyn FnMut()>>,
-    resign_active: Option<Box<dyn FnMut()>>,
     quit: Option<Box<dyn FnMut()>>,
     reopen: Option<Box<dyn FnMut()>>,
-    event: Option<Box<dyn FnMut(PlatformInput) -> bool>>,
     app_menu_action: Option<Box<dyn FnMut(&dyn Action)>>,
     will_open_app_menu: Option<Box<dyn FnMut()>>,
     validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
@@ -342,14 +339,6 @@ impl Platform for WindowsPlatform {
         WindowsDisplay::displays()
     }
 
-    fn display(&self, id: crate::DisplayId) -> Option<Rc<dyn PlatformDisplay>> {
-        if let Some(display) = WindowsDisplay::new(id) {
-            Some(Rc::new(display) as Rc<dyn PlatformDisplay>)
-        } else {
-            None
-        }
-    }
-
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         if let Some(display) = WindowsDisplay::primary_monitor() {
             Some(Rc::new(display) as Rc<dyn PlatformDisplay>)
@@ -511,24 +500,12 @@ impl Platform for WindowsPlatform {
             .detach();
     }
 
-    fn on_become_active(&self, callback: Box<dyn FnMut()>) {
-        self.inner.callbacks.lock().become_active = Some(callback);
-    }
-
-    fn on_resign_active(&self, callback: Box<dyn FnMut()>) {
-        self.inner.callbacks.lock().resign_active = Some(callback);
-    }
-
     fn on_quit(&self, callback: Box<dyn FnMut()>) {
         self.inner.callbacks.lock().quit = Some(callback);
     }
 
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
         self.inner.callbacks.lock().reopen = Some(callback);
-    }
-
-    fn on_event(&self, callback: Box<dyn FnMut(PlatformInput) -> bool>) {
-        self.inner.callbacks.lock().event = Some(callback);
     }
 
     // todo(windows)
