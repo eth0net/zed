@@ -3208,6 +3208,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c297a1c74b71ae29df00c3e22dd9534821d60eb9af5a0192823fa2acea70c2a"
 
 [[package]]
+name = "database_panel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "db",
+ "gpui",
+ "project",
+ "schemars",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "settings",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
+name = "database_view"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+]
+
+[[package]]
 name = "db"
 version = "0.1.0"
 dependencies = [

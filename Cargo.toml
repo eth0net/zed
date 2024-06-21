@@ -20,6 +20,8 @@ members = [
     "crates/command_palette",
     "crates/command_palette_hooks",
     "crates/copilot",
+    "crates/database_panel",
+    "crates/database_view",
     "crates/db",
     "crates/diagnostics",
     "crates/editor",
@@ -174,6 +176,8 @@ command_palette = { path = "crates/command_palette" }
 command_palette_hooks = { path = "crates/command_palette_hooks" }
 copilot = { path = "crates/copilot" }
 dashmap = "5.5.3"
+database_panel = { path = "crates/database_panel" }
+database_view = { path = "crates/database_view" }
 db = { path = "crates/db" }
 diagnostics = { path = "crates/diagnostics" }
 editor = { path = "crates/editor" }

@@ -1,0 +1,20 @@
+[package]
+name = "database_view"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/database_view.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
