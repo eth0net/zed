@@ -19,6 +19,7 @@ pub use open_listener::*;
 
 use anyhow::Context as _;
 use assets::Assets;
+use database_panel::DatabasePanel;
 use futures::{channel::mpsc, select_biased, StreamExt};
 use outline_panel::OutlinePanel;
 use project::TaskSourceKind;
@@ -198,6 +199,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut AppContext) {
                 workspace_handle.clone(),
                 cx.clone(),
             );
+            let database_panel = DatabasePanel::load(workspace_handle.clone(), cx.clone());
 
             let (
                 project_panel,
@@ -207,6 +209,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut AppContext) {
                 channels_panel,
                 chat_panel,
                 notification_panel,
+                database_panel,
             ) = futures::try_join!(
                 project_panel,
                 outline_panel,
@@ -215,6 +218,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut AppContext) {
                 channels_panel,
                 chat_panel,
                 notification_panel,
+                database_panel,
             )?;
 
             workspace_handle.update(&mut cx, |workspace, cx| {
@@ -225,6 +229,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut AppContext) {
                 workspace.add_panel(channels_panel, cx);
                 workspace.add_panel(chat_panel, cx);
                 workspace.add_panel(notification_panel, cx);
+                workspace.add_panel(database_panel, cx);
                 cx.focus_self();
             })
         })
@@ -446,6 +451,13 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut AppContext) {
                  _: &terminal_panel::ToggleFocus,
                  cx: &mut ViewContext<Workspace>| {
                     workspace.toggle_panel_focus::<TerminalPanel>(cx);
+                },
+            )
+            .register_action(
+                |workspace: &mut Workspace,
+                 _: &database_panel::ToggleFocus,
+                 cx: &mut ViewContext<Workspace>| {
+                    workspace.toggle_panel_focus::<DatabasePanel>(cx);
                 },
             )
             .register_action({

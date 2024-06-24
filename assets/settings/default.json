@@ -360,6 +360,20 @@
     // Default width of the notification panel.
     "default_width": 380
   },
+  "database_panel": {
+    // Whether to show the database panel button in the status bar.
+    "button": true,
+    // Default width of the database panel.
+    "default_width": 240,
+    // Where to dock the database panel. Can be 'left' or 'right'.
+    "dock": "left",
+    // Amount of indentation for nested items.
+    "indent_size": 20,
+    // Whether to reveal it in the outline panel automatically,
+    // when a corresponding outline entry becomes active.
+    // Gitignored entries are never auto revealed.
+    "auto_reveal_entries": true
+  },
   "assistant": {
     // Version of this setting.
     "version": "1",

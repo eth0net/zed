@@ -194,6 +194,7 @@ fn init_ui(app_state: Arc<AppState>, cx: &mut AppContext) -> Result<()> {
     search::init(cx);
     vim::init(cx);
     terminal_view::init(cx);
+    database_panel::init(cx);
 
     journal::init(app_state.clone(), cx);
     language_selector::init(cx);

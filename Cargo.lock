@@ -13365,6 +13365,7 @@ dependencies = [
  "collections",
  "command_palette",
  "copilot",
+ "database_panel",
  "db",
  "dev_server_projects",
  "diagnostics",

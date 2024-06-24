@@ -2,18 +2,21 @@ mod database_panel_settings;
 
 use std::sync::Arc;
 
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
 use database_panel_settings::{DatabasePanelDockPosition, DatabasePanelSettings};
 use db::kvp::KEY_VALUE_STORE;
+// use editor::Editor;
 use gpui::{
-    actions, AppContext, EventEmitter, FocusHandle, FocusableView, InteractiveElement,
-    ParentElement, Pixels, Render, Styled, StyledText, Task, ViewContext, WindowContext,
+    actions, AppContext, AsyncWindowContext, EventEmitter, FocusHandle, FocusableView,
+    InteractiveElement, ParentElement, Pixels, Render, Styled, StyledText, Task, View, ViewContext,
+    WeakView, WindowContext,
 };
 use project::Fs;
-use settings::Settings;
+use settings::{Settings, SettingsStore};
 use ui::{prelude::*, v_flex};
-use util::TryFutureExt;
+use util::{ResultExt, TryFutureExt};
 use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
     Workspace,
@@ -45,12 +48,93 @@ pub fn init(cx: &mut AppContext) {
     .detach();
 }
 
+#[derive(Debug)]
+pub enum Event {
+    Focus,
+}
+
 #[derive(Serialize, Deserialize)]
 struct SerializedDatabasePanel {
     width: Option<Pixels>,
 }
 
 impl DatabasePanel {
+    fn new(workspace: &mut Workspace, cx: &mut ViewContext<Workspace>) -> View<Self> {
+        // todo: load database list from the workspace
+        // let databases = workspace.databases.clone();
+        let database_panel = cx.new_view(|cx: &mut ViewContext<Self>| {
+            let focus_handle = cx.focus_handle();
+            cx.on_focus(&focus_handle, Self::focus_in).detach();
+
+            // todo: subscribe to workspace database list events, like project in project_panel
+
+            let mut database_panel_settings = *DatabasePanelSettings::get_global(cx);
+            cx.observe_global::<SettingsStore>(move |_, cx| {
+                let new_settings = *DatabasePanelSettings::get_global(cx);
+                if database_panel_settings != new_settings {
+                    database_panel_settings = new_settings;
+                    cx.notify();
+                }
+            })
+            .detach();
+
+            // let database_name_editor = cx.new_view(|cx| Editor::single_line(cx));
+
+            // cx.subscribe(&database_name_editor, |this, _, event, cx| match event {
+            //     _ => {}
+            // });
+
+            let this = Self {
+                fs: workspace.app_state().fs.clone(),
+                focus_handle,
+                width: None,
+                pending_serialization: Task::ready(None),
+            };
+            // this.update_visible_entries(None, cx);
+
+            this
+        });
+
+        // todo: handle the events needed here as the panel is implemented further
+        // cx.subscribe(&database_panel, {
+        //     let database_panel = database_panel.downgrade();
+        //     move |workspace, _, event, cx| match event {
+        //         _ => {}
+        //     }
+        // })
+        // .detach();
+
+        database_panel
+    }
+
+    pub async fn load(
+        workspace: WeakView<Workspace>,
+        mut cx: AsyncWindowContext,
+    ) -> Result<View<Self>> {
+        let serialized_panel = cx
+            .background_executor()
+            .spawn(async move { KEY_VALUE_STORE.read_kvp(DATABASE_PANEL_KEY) })
+            .await
+            .map_err(|e| anyhow!("Failed to load project panel: {}", e))
+            .log_err()
+            .flatten()
+            .map(|panel| serde_json::from_str::<SerializedDatabasePanel>(&panel))
+            .transpose()
+            .log_err()
+            .flatten();
+
+        workspace.update(&mut cx, |workspace, cx| {
+            let panel = DatabasePanel::new(workspace, cx);
+            if let Some(serialized_panel) = serialized_panel {
+                panel.update(cx, |panel, cx| {
+                    panel.width = serialized_panel.width;
+                    cx.notify();
+                });
+            }
+            panel
+        })
+    }
+
     fn serialize(&mut self, cx: &mut ViewContext<Self>) {
         let width = self.width;
         self.pending_serialization = cx.background_executor().spawn(
@@ -65,6 +149,12 @@ impl DatabasePanel {
             }
             .log_err(),
         );
+    }
+
+    fn focus_in(&mut self, cx: &mut ViewContext<Self>) {
+        if !self.focus_handle.contains_focused(cx) {
+            cx.emit(Event::Focus);
+        }
     }
 }
 
@@ -123,6 +213,8 @@ impl Panel for DatabasePanel {
         Box::new(ToggleFocus)
     }
 }
+
+impl EventEmitter<Event> for DatabasePanel {}
 
 impl EventEmitter<PanelEvent> for DatabasePanel {}
 
