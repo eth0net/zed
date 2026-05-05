@@ -673,6 +673,8 @@ actions!(
         OpenUrl,
         /// Organizes import statements.
         OrganizeImports,
+        /// Toggle compiler optimisation details in Go
+        ToggleCompilerOptDetails,
         /// Decreases indentation of selected lines.
         Outdent,
         /// Automatically adjusts indentation based on context.

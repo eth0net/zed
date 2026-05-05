@@ -19148,6 +19148,26 @@ impl Editor {
         })
     }
 
+    fn toggle_compiler_opt_details(
+        &mut self,
+        _: &ToggleCompilerOptDetails,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<()>>> {
+        self.hide_mouse_cursor(HideMouseCursorOrigin::TypingAction, cx);
+        let project = match &self.project {
+            Some(project) => project.clone(),
+            None => return None,
+        };
+        Some(self.perform_code_action_kind(
+            project,
+            CodeActionKind::new("source.toggleCompilerOptDetails"),
+            // CodeActionKind::new("gopls.gc_details"),
+            window,
+            cx,
+        ))
+    }
+
     fn organize_imports(
         &mut self,
         _: &OrganizeImports,

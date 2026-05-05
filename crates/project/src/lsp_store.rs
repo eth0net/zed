@@ -5397,7 +5397,7 @@ impl LspStore {
                 lsp_store.update(cx, |lsp_store, _| {
                     lsp_store.update_last_formatting_failure(&result);
                 })?;
-                result
+                dbg!(result)
             })
         } else if let Some((client, project_id)) = self.upstream_client() {
             let buffer_store = self.buffer_store();

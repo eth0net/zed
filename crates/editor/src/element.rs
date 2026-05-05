@@ -553,6 +553,13 @@ impl EditorElement {
             }
         });
         register_action(editor, window, |editor, action, window, cx| {
+            if let Some(task) = editor.toggle_compiler_opt_details(action, window, cx) {
+                editor.detach_and_notify_err(task, window, cx);
+            } else {
+                cx.propagate();
+            }
+        });
+        register_action(editor, window, |editor, action, window, cx| {
             if let Some(task) = editor.organize_imports(action, window, cx) {
                 editor.detach_and_notify_err(task, window, cx);
             } else {

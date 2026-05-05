@@ -6,7 +6,7 @@ use gpui::{App, AsyncApp, Task};
 use http_client::github::latest_github_release;
 pub use language::*;
 use language::{LanguageToolchainStore, LspAdapterDelegate, LspInstaller};
-use lsp::{LanguageServerBinary, LanguageServerName};
+use lsp::{CodeActionKind, LanguageServerBinary, LanguageServerName};
 
 use regex::Regex;
 use serde_json::json;
@@ -186,6 +186,13 @@ impl LspInstaller for GoLspAdapter {
 
 #[async_trait(?Send)]
 impl LspAdapter for GoLspAdapter {
+    fn code_action_kinds(&self) -> Option<Vec<CodeActionKind>> {
+        Some(vec![
+            // CodeActionKind::new("source.toggleCompilerOptDetails"),
+            CodeActionKind::new("gopls.gc_details"),
+        ])
+    }
+
     fn name(&self) -> LanguageServerName {
         Self::SERVER_NAME
     }
