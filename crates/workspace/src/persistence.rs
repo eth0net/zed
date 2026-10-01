@@ -2721,7 +2721,7 @@ impl RecentWorkspace {
 }
 
 async fn resolve_local_workspace_identity(fs: &dyn Fs, paths: &PathList) -> Option<PathList> {
-    let raw_paths = paths.paths();
+    let raw_paths: Vec<&PathBuf> = paths.ordered_paths().collect();
     let resolved_paths = futures::future::join_all(
         raw_paths
             .iter()
@@ -2740,7 +2740,7 @@ async fn resolve_local_workspace_identity(fs: &dyn Fs, paths: &PathList) -> Opti
             resolved
                 .as_ref()
                 .cloned()
-                .unwrap_or_else(|| original.clone())
+                .unwrap_or_else(|| (*original).clone())
         })
         .collect();
     let resolved_path_refs: Vec<&Path> = resolved_paths.iter().map(PathBuf::as_path).collect();
@@ -5760,6 +5760,49 @@ mod tests {
         // Submodules are independent projects: their identity is their own
         // working directory, not the superproject's `.git/modules/<name>`.
         assert_eq!(result.identity_paths.paths(), &[PathBuf::from("/Foo/Bar")]);
+    }
+
+    #[gpui::test]
+    async fn test_recent_workspace_identity_preserves_path_order(cx: &mut gpui::TestAppContext) {
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/the-project",
+            json!({
+                ".git": "gitdir: ./.bare\n",
+                ".bare": {
+                    "worktrees": {
+                        "feature-a": {
+                            "commondir": "../../",
+                            "HEAD": "ref: refs/heads/feature-a"
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+        fs.insert_tree(
+            "/the-project/feature-a",
+            json!({ ".git": "gitdir: ../.bare/worktrees/feature-a\n" }),
+        )
+        .await;
+        fs.insert_tree("/aaa", json!({ "file.txt": "" })).await;
+
+        let result = local_recent_workspace(
+            WorkspaceId(1),
+            PathList::new(&["/the-project/feature-a", "/aaa"]),
+            Utc::now(),
+            fs.as_ref(),
+        )
+        .await;
+
+        assert_eq!(
+            result
+                .identity_paths
+                .ordered_paths()
+                .cloned()
+                .collect::<Vec<_>>(),
+            [PathBuf::from("/the-project"), PathBuf::from("/aaa")]
+        );
     }
 
     #[gpui::test]
