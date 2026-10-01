@@ -153,7 +153,7 @@ use ui::{Window, prelude::*};
 use url::Url;
 use util::{
     ResultExt, TryFutureExt,
-    paths::{PathStyle, SanitizedPath},
+    paths::{PathExt as _, PathStyle, SanitizedPath},
     rel_path::RelPath,
     serde::default_true,
 };
@@ -2169,6 +2169,30 @@ impl Workspace {
         open_mode: OpenMode,
         cx: &mut App,
     ) -> Task<anyhow::Result<OpenResult>> {
+        Self::new_local_for_serialized(
+            abs_paths,
+            None,
+            app_state,
+            requesting_window,
+            env,
+            init,
+            open_mode,
+            cx,
+        )
+    }
+
+    /// Like [`Self::new_local`], but restores `serialized_id` when it holds all of `abs_paths`,
+    /// reporting any of its other folders as missing.
+    fn new_local_for_serialized(
+        abs_paths: Vec<PathBuf>,
+        serialized_id: Option<WorkspaceId>,
+        app_state: Arc<AppState>,
+        requesting_window: Option<WindowHandle<MultiWorkspace>>,
+        env: Option<HashMap<String, String>>,
+        init: Option<Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send>>,
+        open_mode: OpenMode,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<OpenResult>> {
         let project_handle = Project::local(
             app_state.client.clone(),
             app_state.node_runtime.clone(),
@@ -2192,11 +2216,27 @@ impl Workspace {
                 }
             }
 
-            let serialized_workspace = db.workspace_for_roots(paths_to_open.as_slice());
-
-            if let Some(paths) = serialized_workspace.as_ref().map(|ws| &ws.paths) {
-                paths_to_open = paths.ordered_paths().cloned().collect();
-            }
+            let mut missing_paths = Vec::new();
+            let serialized_workspace = if let Some(serialized_workspace) = serialized_id
+                .and_then(|id| db.workspace_for_id(id))
+                .filter(|serialized_workspace| {
+                    paths_to_open
+                        .iter()
+                        .all(|path| serialized_workspace.paths.paths().contains(path))
+                }) {
+                (paths_to_open, missing_paths) = serialized_workspace
+                    .paths
+                    .ordered_paths()
+                    .cloned()
+                    .partition(|path| paths_to_open.contains(path));
+                Some(serialized_workspace)
+            } else {
+                let serialized_workspace = db.workspace_for_roots(paths_to_open.as_slice());
+                if let Some(paths) = serialized_workspace.as_ref().map(|ws| &ws.paths) {
+                    paths_to_open = paths.ordered_paths().cloned().collect();
+                }
+                serialized_workspace
+            };
 
             // Get project paths for all of the abs_paths
             let mut project_paths: Vec<(PathBuf, Option<ProjectPath>)> =
@@ -2415,6 +2455,9 @@ impl Workspace {
                 .update(cx, |_, _window, cx| {
                     workspace.update(cx, |this: &mut Workspace, cx| {
                         this.update_history(cx);
+                        if !missing_paths.is_empty() {
+                            this.show_missing_folders_notification(&missing_paths, cx);
+                        }
                     });
                 })
                 .log_err();
@@ -2446,6 +2489,30 @@ impl Workspace {
 
     pub fn project_group_key(&self, cx: &App) -> ProjectGroupKey {
         self.project.read(cx).project_group_key(cx)
+    }
+
+    fn show_missing_folders_notification(
+        &mut self,
+        missing_paths: &[PathBuf],
+        cx: &mut Context<Self>,
+    ) {
+        struct MissingFoldersNotification;
+
+        let folders = missing_paths
+            .iter()
+            .map(|path| path.compact().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = if missing_paths.len() == 1 {
+            format!("{folders} no longer exists, so it was left out of this project.")
+        } else {
+            format!("{folders} no longer exist, so they were left out of this project.")
+        };
+        self.show_notification(
+            NotificationId::unique::<MissingFoldersNotification>(),
+            cx,
+            |cx| cx.new(|cx| MessageNotification::new(message, cx)),
+        );
     }
 
     pub fn weak_handle(&self) -> WeakEntity<Self> {
@@ -10259,8 +10326,9 @@ pub async fn restore_multiworkspace(
         .await
     } else {
         cx.update(|cx| {
-            Workspace::new_local(
+            Workspace::new_local_for_serialized(
                 active_workspace.paths.ordered_paths().cloned().collect(),
+                Some(active_workspace.workspace_id),
                 app_state.clone(),
                 None,
                 None,
@@ -10353,6 +10421,9 @@ pub async fn apply_restored_multiworkspace_state(
             }
             let mut resolved_paths = Vec::new();
             for path in key.path_list().ordered_paths() {
+                if key.host().is_none() && fs.metadata(path).await.ok().flatten().is_none() {
+                    continue;
+                }
                 if key.host().is_none()
                     && let Some(common_dir) =
                         project::discover_root_repo_common_dir(path, fs.as_ref()).await
@@ -10363,6 +10434,10 @@ pub async fn apply_restored_multiworkspace_state(
                 } else {
                     resolved_paths.push(path.to_path_buf());
                 }
+            }
+            // A group whose folders are all gone keeps them, so it stays listed until removed.
+            if resolved_paths.is_empty() {
+                resolved_paths = key.path_list().ordered_paths().cloned().collect();
             }
             let resolved = ProjectGroupKey::new(key.host(), PathList::new(&resolved_paths));
             if !resolved_groups.iter().any(|g| g.key == resolved) {

@@ -2042,19 +2042,17 @@ impl WorkspaceDb {
         }
     }
 
-    async fn all_paths_exist_with_a_directory(paths: &[PathBuf], fs: &dyn Fs) -> bool {
+    /// The paths that still exist, in their original order, or `None` unless one is a directory.
+    async fn existing_paths_with_a_directory(paths: &PathList, fs: &dyn Fs) -> Option<PathList> {
+        let mut existing = Vec::new();
         let mut any_dir = false;
-        for path in paths {
-            match fs.metadata(path).await.ok().flatten() {
-                None => return false,
-                Some(meta) => {
-                    if meta.is_dir {
-                        any_dir = true;
-                    }
-                }
+        for path in paths.ordered_paths() {
+            if let Some(metadata) = fs.metadata(path).await.ok().flatten() {
+                any_dir |= metadata.is_dir;
+                existing.push(path.clone());
             }
         }
-        any_dir
+        any_dir.then(|| PathList::new(&existing))
     }
 
     // Returns the raw recent workspace history. Scratch workspaces (no paths) are filtered
@@ -2085,7 +2083,10 @@ impl WorkspaceDb {
                 continue;
             }
 
-            if Self::all_paths_exist_with_a_directory(paths.paths(), fs).await {
+            if let Some(existing_paths) = Self::existing_paths_with_a_directory(&paths, fs).await {
+                let identity_paths_hint =
+                    identity_paths_hint.filter(|_| existing_paths.paths() == paths.paths());
+                let paths = existing_paths;
                 let identity_paths = resolve_local_workspace_identity(fs, &paths)
                     .await
                     .or(identity_paths_hint)
@@ -2196,7 +2197,9 @@ impl WorkspaceDb {
                 continue;
             }
 
-            if !Self::all_paths_exist_with_a_directory(paths.paths(), fs).await
+            if Self::existing_paths_with_a_directory(&paths, fs)
+                .await
+                .is_none()
                 && now - timestamp >= chrono::Duration::days(7)
             {
                 workspaces_to_delete.push(id);
@@ -2245,14 +2248,21 @@ impl WorkspaceDb {
                 continue;
             }
 
-            if paths.is_empty() || Self::all_paths_exist_with_a_directory(paths.paths(), fs).await {
-                workspaces.push(SessionWorkspace {
-                    workspace_id,
-                    location: SerializedWorkspaceLocation::Local,
-                    paths,
-                    window_id,
-                });
-            }
+            let paths = if paths.is_empty() {
+                paths
+            } else if let Some(existing_paths) =
+                Self::existing_paths_with_a_directory(&paths, fs).await
+            {
+                existing_paths
+            } else {
+                continue;
+            };
+            workspaces.push(SessionWorkspace {
+                workspace_id,
+                location: SerializedWorkspaceLocation::Local,
+                paths,
+                window_id,
+            });
         }
 
         if let Some(stack) = last_session_window_stack {
@@ -4159,6 +4169,75 @@ mod tests {
             sessions.is_empty(),
             "workspaces whose paths no longer exist on disk must not restore"
         );
+    }
+
+    #[gpui::test]
+    async fn test_last_session_restores_existing_paths_of_partially_missing_workspace(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree("/present", json!({ "file.txt": "" })).await;
+        let db = WorkspaceDb::open_test_db(
+            "test_last_session_restores_existing_paths_of_partially_missing_workspace",
+        )
+        .await;
+
+        db.save_workspace(workspace_with(
+            1,
+            &[Path::new("/gone"), Path::new("/present")],
+            empty_pane_group(),
+            Some("s"),
+        ))
+        .await;
+
+        let sessions = db
+            .last_session_workspace_locations("s", None, fs.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].workspace_id, WorkspaceId(1));
+        assert_eq!(sessions[0].paths.paths(), &[PathBuf::from("/present")]);
+    }
+
+    #[gpui::test]
+    async fn test_gc_preserves_workspace_until_all_paths_are_missing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree("/present", json!({ "file.txt": "" })).await;
+        let db =
+            WorkspaceDb::open_test_db("test_gc_preserves_workspace_until_all_paths_are_missing")
+                .await;
+
+        db.save_workspace(workspace_with(
+            1,
+            &[Path::new("/gone"), Path::new("/present")],
+            empty_pane_group(),
+            None,
+        ))
+        .await;
+        db.set_timestamp_for_tests(WorkspaceId(1), "2000-01-01 00:00:00".to_owned())
+            .await
+            .unwrap();
+
+        db.garbage_collect_workspaces(fs.as_ref(), "current", None)
+            .await
+            .unwrap();
+        assert!(db.workspace_for_id(WorkspaceId(1)).is_some());
+
+        fs.remove_dir(
+            Path::new("/present"),
+            fs::RemoveOptions {
+                recursive: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        db.garbage_collect_workspaces(fs.as_ref(), "current", None)
+            .await
+            .unwrap();
+        assert!(db.workspace_for_id(WorkspaceId(1)).is_none());
     }
 
     #[gpui::test]
