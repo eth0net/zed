@@ -3990,7 +3990,10 @@ impl Project {
             WorktreeStoreEvent::WorktreeReleased(_, id) => {
                 self.on_worktree_released(*id, cx);
             }
-            WorktreeStoreEvent::WorktreeOrderChanged => cx.emit(Event::WorktreeOrderChanged),
+            WorktreeStoreEvent::WorktreeOrderChanged => {
+                cx.emit(Event::WorktreeOrderChanged);
+                self.emit_group_key_changed_if_needed(cx);
+            }
             WorktreeStoreEvent::WorktreeUpdateSent(_) => {}
             WorktreeStoreEvent::WorktreeUpdatedEntries(worktree_id, changes) => {
                 self.client()

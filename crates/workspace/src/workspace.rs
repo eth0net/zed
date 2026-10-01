@@ -1774,7 +1774,8 @@ impl Workspace {
                         this.update_history(cx);
                     }
                 }
-                project::Event::WorktreeUpdatedEntries(..) => {
+                project::Event::WorktreeUpdatedEntries(..)
+                | project::Event::WorktreeOrderChanged => {
                     this.update_window_title(window, cx);
                     this.serialize_workspace(window, cx);
                 }
@@ -10259,7 +10260,7 @@ pub async fn restore_multiworkspace(
     } else {
         cx.update(|cx| {
             Workspace::new_local(
-                active_workspace.paths.paths().to_vec(),
+                active_workspace.paths.ordered_paths().cloned().collect(),
                 app_state.clone(),
                 None,
                 None,
@@ -10288,7 +10289,7 @@ pub async fn restore_multiworkspace(
             let mut fallback_handle = None;
             for key in &state.project_groups {
                 let key: ProjectGroupKey = key.clone().into();
-                let paths = key.path_list().paths().to_vec();
+                let paths = key.path_list().ordered_paths().cloned().collect();
                 match cx
                     .update(|cx| {
                         Workspace::new_local(
@@ -10351,7 +10352,7 @@ pub async fn apply_restored_multiworkspace_state(
                 continue;
             }
             let mut resolved_paths = Vec::new();
-            for path in key.path_list().paths() {
+            for path in key.path_list().ordered_paths() {
                 if key.host().is_none()
                     && let Some(common_dir) =
                         project::discover_root_repo_common_dir(path, fs.as_ref()).await

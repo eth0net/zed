@@ -544,6 +544,83 @@ async fn test_adding_worktree_updates_project_group_key(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+async fn test_reordering_worktrees_updates_project_group_key_order(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "other.txt": "" })).await;
+    let project = Project::test(fs.clone(), ["/root_a".as_ref(), "/root_b".as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    multi_workspace.update(cx, |mw, cx| {
+        mw.open_sidebar(cx);
+    });
+    cx.run_until_parked();
+
+    let ordered_group_paths = |cx: &mut VisualTestContext| {
+        multi_workspace.read_with(cx, |mw, _cx| {
+            mw.project_group_keys()[0]
+                .path_list()
+                .ordered_paths()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        ordered_group_paths(cx),
+        [PathBuf::from("/root_a"), PathBuf::from("/root_b")]
+    );
+
+    project.update(cx, |project, cx| {
+        let ids: Vec<_> = project
+            .visible_worktrees(cx)
+            .map(|w| w.read(cx).id())
+            .collect();
+        project
+            .move_worktree(ids[1], ids[0], cx)
+            .expect("moving worktree should succeed");
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        ordered_group_paths(cx),
+        [PathBuf::from("/root_b"), PathBuf::from("/root_a")]
+    );
+}
+
+#[gpui::test]
+async fn test_restored_project_groups_keep_path_order(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "other.txt": "" })).await;
+    let project = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+    let saved_key = ProjectGroupKey::new(None, PathList::new(&["/root_b", "/root_a"]));
+    let state = MultiWorkspaceState {
+        project_groups: vec![SerializedProjectGroup::from_group(&saved_key, true)],
+        ..Default::default()
+    };
+    apply_restored_multiworkspace_state(window, &state, fs.clone(), &mut cx.to_async()).await;
+
+    let restored_paths = window
+        .read_with(cx, |mw, _cx| {
+            mw.project_group_keys()[0]
+                .path_list()
+                .ordered_paths()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .expect("window should exist");
+    assert_eq!(
+        restored_paths,
+        [PathBuf::from("/root_b"), PathBuf::from("/root_a")]
+    );
+}
+
+#[gpui::test]
 async fn test_find_or_create_local_workspace_reuses_active_workspace_when_sidebar_closed(
     cx: &mut TestAppContext,
 ) {

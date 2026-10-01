@@ -694,11 +694,16 @@ impl MultiWorkspace {
         new_key: &ProjectGroupKey,
         cx: &App,
     ) {
-        if old_key == new_key {
+        if new_key.path_list().paths().is_empty() {
             return;
         }
 
-        if new_key.path_list().paths().is_empty() {
+        // Keys compare equal regardless of path order, so a reorder still has to
+        // replace the stored key for the sidebar to show the new order.
+        if old_key == new_key {
+            if let Some(group) = self.project_groups.iter_mut().find(|g| g.key == *new_key) {
+                group.key = new_key.clone();
+            }
             return;
         }
 
