@@ -7546,6 +7546,93 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_session_restore_with_missing_folder(cx: &mut TestAppContext) {
+        use session::Session;
+        use util::path_list::PathList;
+        use workspace::{OpenMode, ProjectGroupKey, Workspace};
+
+        let app_state = init_test(cx);
+
+        let kept = path!("/kept");
+        let gone = path!("/gone");
+        let fs = app_state.fs.clone();
+        let fake_fs = fs.as_fake();
+        fake_fs.insert_tree(kept, json!({ "a.txt": "a" })).await;
+        fake_fs.insert_tree(gone, json!({})).await;
+
+        let session_id = cx.read(|cx| app_state.session.read(cx).id().to_owned());
+        let workspace::OpenResult { window, .. } = cx
+            .update(|cx| {
+                Workspace::new_local(
+                    vec![gone.into(), kept.into()],
+                    app_state.clone(),
+                    None,
+                    None,
+                    None,
+                    OpenMode::Activate,
+                    cx,
+                )
+            })
+            .await
+            .expect("failed to open workspace");
+        window
+            .update(cx, |multi_workspace, _, cx| {
+                multi_workspace.open_sidebar(cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        flush_workspace_serialization(&window, cx).await;
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+
+        fake_fs
+            .remove_dir(
+                Path::new(gone),
+                fs::RemoveOptions {
+                    recursive: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        cx.update(|cx| {
+            app_state.session.update(cx, |app_session, _cx| {
+                app_session
+                    .replace_session_for_test(Session::test_with_old_session(session_id.clone()));
+            });
+        });
+        crate::restore_or_create_workspace(app_state.clone(), &mut cx.to_async())
+            .await
+            .expect("failed to restore workspaces");
+        cx.run_until_parked();
+
+        let restored: Vec<WindowHandle<MultiWorkspace>> = cx.read(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<MultiWorkspace>())
+                .collect()
+        });
+        assert_eq!(restored.len(), 1);
+        restored[0]
+            .read_with(cx, |mw, cx| {
+                let workspace = mw.workspace().read(cx);
+                assert_eq!(workspace.root_paths(cx), vec![Arc::from(Path::new(kept))]);
+                assert_eq!(
+                    workspace.notification_ids().len(),
+                    1,
+                    "the missing folder should be reported"
+                );
+                assert_eq!(
+                    mw.project_group_keys(),
+                    vec![ProjectGroupKey::new(None, PathList::new(&[kept]))]
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     async fn test_quit_preserves_focused_workspace_for_restore(cx: &mut TestAppContext) {
         use session::Session;
         use workspace::{OpenMode, Workspace};
