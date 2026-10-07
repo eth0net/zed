@@ -5451,7 +5451,7 @@ fn window_and_layout_page() -> SettingsPage {
 }
 
 fn panels_page() -> SettingsPage {
-    fn project_panel_section() -> [SettingsPageItem; 30] {
+    fn project_panel_section() -> [SettingsPageItem; 31] {
         [
             SettingsPageItem::SectionHeader("Project Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5738,6 +5738,29 @@ fn panels_page() -> SettingsPage {
                             .project_panel
                             .get_or_insert_default()
                             .auto_reveal_entries = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Restore Collapse State",
+                description: "Whether to save and restore the collapsed state of worktree roots and directories in the project panel across sessions.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("project_panel.restore_collapse_state"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project_panel
+                            .as_ref()?
+                            .restore_collapse_state
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_panel
+                            .get_or_insert_default()
+                            .restore_collapse_state = value;
                     },
                 }),
                 metadata: None,
