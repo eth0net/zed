@@ -394,7 +394,7 @@ fn terminal_initial_title(input: Result<String, serde_json::Value>) -> SharedStr
 fn wsl_zed_release(cx: &App) -> Option<(String, String)> {
     use release_channel::{AppVersion, ReleaseChannel};
     match *release_channel::RELEASE_CHANNEL {
-        ReleaseChannel::Dev | ReleaseChannel::Nightly => {
+        ReleaseChannel::Dev | ReleaseChannel::Nightly | ReleaseChannel::Fork => {
             Some(("nightly".to_string(), "latest".to_string()))
         }
         channel => {

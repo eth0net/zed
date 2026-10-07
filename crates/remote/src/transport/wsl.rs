@@ -220,7 +220,7 @@ impl WslRemoteConnection {
         cx: &mut AsyncApp,
     ) -> Result<Arc<RelPath>> {
         let version_str = match release_channel {
-            ReleaseChannel::Dev => "build".to_string(),
+            ReleaseChannel::Dev | ReleaseChannel::Fork => "build".to_string(),
             _ => version.to_string(),
         };
 
@@ -275,7 +275,7 @@ impl WslRemoteConnection {
         }
 
         let wanted_version = match release_channel {
-            ReleaseChannel::Nightly | ReleaseChannel::Dev => None,
+            ReleaseChannel::Nightly | ReleaseChannel::Dev | ReleaseChannel::Fork => None,
             _ => Some(cx.update(|cx| AppVersion::global(cx))),
         };
 
