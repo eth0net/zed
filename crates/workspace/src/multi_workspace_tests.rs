@@ -272,6 +272,55 @@ async fn test_move_active_project_group_actions(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_move_project_group_onto_another(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_c", json!({ "file.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs.clone(), ["/root_b".as_ref()], cx).await;
+    let project_c = Project::test(fs, ["/root_c".as_ref()], cx).await;
+
+    let key_a = project_a.read_with(cx, |project, cx| project.project_group_key(cx));
+    let key_b = project_b.read_with(cx, |project, cx| project.project_group_key(cx));
+    let key_c = project_c.read_with(cx, |project, cx| project.project_group_key(cx));
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx);
+        multi_workspace.test_add_workspace(project_c, window, cx);
+    });
+
+    let keys = |cx: &mut VisualTestContext| {
+        multi_workspace.read_with(cx, |multi_workspace, _| {
+            multi_workspace.project_group_keys()
+        })
+    };
+    assert_eq!(keys(cx), vec![key_c.clone(), key_b.clone(), key_a.clone()]);
+
+    // Moving down lands after the target.
+    let moved = multi_workspace.update(cx, |multi_workspace, cx| {
+        multi_workspace.move_project_group(&key_c, &key_b, cx)
+    });
+    assert!(moved);
+    assert_eq!(keys(cx), vec![key_b.clone(), key_c.clone(), key_a.clone()]);
+
+    // Moving up lands before the target.
+    multi_workspace.update(cx, |multi_workspace, cx| {
+        multi_workspace.move_project_group(&key_a, &key_b, cx)
+    });
+    assert_eq!(keys(cx), vec![key_a.clone(), key_b.clone(), key_c.clone()]);
+
+    let moved = multi_workspace.update(cx, |multi_workspace, cx| {
+        multi_workspace.move_project_group(&key_b, &key_b, cx)
+    });
+    assert!(!moved);
+    assert_eq!(keys(cx), vec![key_a, key_b, key_c]);
+}
+
+#[gpui::test]
 async fn test_open_new_window_does_not_open_sidebar_on_existing_window(cx: &mut TestAppContext) {
     init_test(cx);
 

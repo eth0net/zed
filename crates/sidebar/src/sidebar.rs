@@ -500,6 +500,30 @@ impl From<TerminalEntry> for ListEntry {
     }
 }
 
+#[derive(Clone)]
+struct DraggedProjectGroup {
+    key: ProjectGroupKey,
+    label: SharedString,
+    width: Pixels,
+}
+
+impl Render for DraggedProjectGroup {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui_font = theme_settings::ThemeSettings::get_global(cx)
+            .ui_font
+            .clone();
+        h_flex()
+            .font(ui_font)
+            .w(self.width)
+            .h(Tab::content_height(cx))
+            .px_2()
+            .bg(cx.theme().colors().background)
+            .border_1()
+            .border_color(cx.theme().colors().border)
+            .child(Label::new(self.label.clone()).truncate())
+    }
+}
+
 #[derive(Default)]
 struct SidebarContents {
     entries: Vec<ListEntry>,
@@ -2347,6 +2371,13 @@ impl Sidebar {
 
         let key_for_toggle = key.clone();
         let key_for_focus = key.clone();
+        let key_for_drag_over = key.clone();
+        let key_for_drop = key.clone();
+        let dragged_group = DraggedProjectGroup {
+            key: key.clone(),
+            label: label.clone(),
+            width: self.width,
+        };
 
         let color = cx.theme().colors();
         let sidebar_base_bg = if is_sticky {
@@ -2411,6 +2442,29 @@ impl Sidebar {
             .when(!has_filter, |this| {
                 this.hover(|s| s.bg(color.ghost_element_hover))
                     .group_active(&group_name, |s| s.bg(color.ghost_element_active))
+                    .on_drag(dragged_group, |dragged, _, _, cx| {
+                        cx.new(|_| dragged.clone())
+                    })
+                    .drag_over::<DraggedProjectGroup>(move |style, dragged, _, cx| {
+                        if dragged.key == key_for_drag_over {
+                            style
+                        } else {
+                            style.bg(cx.theme().colors().drop_target_background)
+                        }
+                    })
+                    .on_drop(
+                        cx.listener(move |this, dragged: &DraggedProjectGroup, _, cx| {
+                            this.multi_workspace
+                                .update(cx, |multi_workspace, cx| {
+                                    multi_workspace.move_project_group(
+                                        &dragged.key,
+                                        &key_for_drop,
+                                        cx,
+                                    );
+                                })
+                                .ok();
+                        }),
+                    )
             })
             .child(
                 h_flex()
