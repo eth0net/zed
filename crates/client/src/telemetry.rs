@@ -99,7 +99,8 @@ pub fn should_install_crash_handler(channel: ReleaseChannel) -> bool {
     matches!(
         env::var("ZED_GENERATE_MINIDUMPS").as_deref(),
         Ok("true" | "1")
-    ) || (channel != ReleaseChannel::Dev && MINIDUMP_ENDPOINT.is_some())
+    ) || (!matches!(channel, ReleaseChannel::Dev | ReleaseChannel::Fork)
+        && MINIDUMP_ENDPOINT.is_some())
 }
 
 static DOTNET_PROJECT_FILES_REGEX: LazyLock<Regex> = LazyLock::new(|| {

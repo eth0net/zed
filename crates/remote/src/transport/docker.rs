@@ -221,7 +221,7 @@ impl DockerExecConnection {
                 let commit = commit.map(|s| s.full()).unwrap_or_default();
                 format!("{}-{}", version, commit)
             }
-            ReleaseChannel::Dev => "build".to_string(),
+            ReleaseChannel::Dev | ReleaseChannel::Fork => "build".to_string(),
             _ => version.to_string(),
         };
         let binary_name = format!(
@@ -277,7 +277,7 @@ impl DockerExecConnection {
 
         let wanted_version = cx.update(|cx| match release_channel {
             ReleaseChannel::Nightly => Ok(None),
-            ReleaseChannel::Dev => {
+            ReleaseChannel::Dev | ReleaseChannel::Fork => {
                 anyhow::bail!(
                     "ZED_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
                     dst_path
