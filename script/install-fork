@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+app="/Applications/Zed Fork.app"
+
+# Only speeds up debug rebuilds, and a release build needs the disk.
+rm -rf target/debug/incremental
+
+ZED_RELEASE_CHANNEL=fork script/bundle-mac -i "$@"
+
+if pgrep -qf "$app/Contents/MacOS/zed"; then
+    echo "Restart Zed Fork to run the new build."
+fi
