@@ -7,7 +7,8 @@ cd "$(dirname "$0")/.."
 app="/Applications/Zed Fork.app"
 
 # Only speeds up debug rebuilds, and a release build needs the disk.
-rm -rf target/debug/incremental
+# rust-analyzer can be writing to it, so a partial removal is fine.
+rm -rf target/debug/incremental || echo "Couldn't fully clear target/debug/incremental."
 
 ZED_RELEASE_CHANNEL=fork script/bundle-mac -i "$@"
 
