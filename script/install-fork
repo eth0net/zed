@@ -11,6 +11,10 @@ rm -rf target/debug/incremental
 
 ZED_RELEASE_CHANNEL=fork script/bundle-mac -i "$@"
 
+# Rebuilds after an upstream merge recompile most crates anyway, so the cache
+# isn't worth ~19GB between installs. target/release is shared with clippy.
+rm -rf target/*-apple-darwin/release
+
 if pgrep -qf "$app/Contents/MacOS/zed"; then
     echo "Restart Zed Fork to run the new build."
 fi
