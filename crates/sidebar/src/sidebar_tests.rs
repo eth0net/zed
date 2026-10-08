@@ -15879,3 +15879,64 @@ fn sidebar_painted_background_at(position: Point<Pixels>, cx: &mut VisualTestCon
         u32::from(Rgba::from(color))
     })
 }
+
+#[gpui::test]
+async fn test_drag_project_header_onto_another(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    for path in ["/project-a", "/project-b", "/project-c"] {
+        fs.insert_tree(path, serde_json::json!({ "src": {} })).await;
+    }
+    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
+
+    let project_a = project::Project::test(fs.clone(), ["/project-a".as_ref()], cx).await;
+    let project_b = project::Project::test(fs.clone(), ["/project-b".as_ref()], cx).await;
+    let project_c = project::Project::test(fs, ["/project-c".as_ref()], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx);
+        multi_workspace.test_add_workspace(project_c, window, cx);
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [project-c]", "v [project-b]", "v [project-a]"]
+    );
+
+    // An empty group's item also holds the "No threads yet" row below the
+    // header, so aim near the top rather than at the center.
+    let header_point = |ix: usize, cx: &mut VisualTestContext| {
+        let bounds = sidebar.read_with(cx, |sidebar, _| {
+            sidebar
+                .list_state
+                .bounds_for_item(ix)
+                .expect("rendered project header")
+        });
+        bounds.origin + gpui::point(bounds.size.width / 2., px(8.))
+    };
+    let drag = |from: usize, to: usize, cx: &mut VisualTestContext| {
+        let source = header_point(from, cx);
+        let target = header_point(to, cx);
+        cx.simulate_mouse_down(source, gpui::MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+        cx.simulate_mouse_move(target, gpui::MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+        cx.simulate_mouse_up(target, gpui::MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+    };
+
+    drag(0, 2, cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [project-b]", "v [project-a]", "v [project-c]"]
+    );
+
+    drag(2, 1, cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [project-b]", "v [project-c]", "v [project-a]"]
+    );
+}
