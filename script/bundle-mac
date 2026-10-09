@@ -352,8 +352,10 @@ upload_debug_symbols
 # Sentry receives the extracted zed.dwarf, not the binary, so debug symbols
 # must be extracted before the binaries are stripped below. The .dwarf files
 # also keep symbols recoverable when the sentry upload is skipped.
-if [[ "$target_dir" == "release" && "$local_install" != true ]]; then
-    extract_debug_symbols
+if [[ "$target_dir" == "release" ]]; then
+    if [[ "$local_install" != true ]]; then
+        extract_debug_symbols
+    fi
     strip -x "target/${target_triple}/${target_dir}/zed"
     strip -x "target/${target_triple}/${target_dir}/cli"
     strip -x "target/${target_triple}/${target_dir}/remote_server"
