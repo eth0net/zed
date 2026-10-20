@@ -83,6 +83,8 @@ pub struct FakeGitRepositoryState {
     pub stash_entries: GitStash,
     pub commit_template: Option<GitCommitTemplate>,
     pub blob_read_gate: Option<FakeBlobReadGate>,
+    /// Keyed by `(base, target)`.
+    pub range_diffs: HashMap<(String, String), git::repository::CommitDiff>,
 }
 
 impl FakeGitRepositoryState {
@@ -111,6 +113,7 @@ impl FakeGitRepositoryState {
             commit_history: Vec::new(),
             stash_entries: Default::default(),
             commit_template: None,
+            range_diffs: Default::default(),
         }
     }
 }
@@ -301,17 +304,20 @@ impl GitRepository for FakeGitRepository {
 
     fn load_range_diff(
         &self,
-        _base: String,
-        _target: String,
+        base: String,
+        target: String,
         _cx: AsyncApp,
     ) -> BoxFuture<'_, Result<git::repository::CommitDiff>> {
-        async {
-            Ok(git::repository::CommitDiff {
-                files: Vec::new(),
-                is_shallow_boundary: false,
-            })
-        }
-        .boxed()
+        self.with_state_async(false, move |state| {
+            Ok(state
+                .range_diffs
+                .get(&(base, target))
+                .cloned()
+                .unwrap_or(git::repository::CommitDiff {
+                    files: Vec::new(),
+                    is_shallow_boundary: false,
+                }))
+        })
     }
 
     fn set_index_text(

@@ -1,4 +1,4 @@
-use crate::{commit_view::CommitView, create_tag_at_commit};
+use crate::{commit_view::CommitView, create_tag_at_commit, range_diff_view::RangeDiffView};
 use git::Oid;
 use gpui::{Action, ClipboardItem, Entity, FocusHandle, SharedString, WeakEntity, Window, actions};
 use project::{GIT_COMMAND_TASK_TAG, git_store::Repository};
@@ -73,6 +73,24 @@ pub(crate) fn commit_context_menu(
                         workspace.clone(),
                         None,
                         None,
+                        window,
+                        cx,
+                    );
+                }
+            })
+            .entry("Compare with Default Branch", None, {
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                let target: SharedString =
+                    ref_name.clone().unwrap_or_else(|| sha.to_string().into());
+                move |window, cx| {
+                    let Some(repository) = repository.as_ref().and_then(WeakEntity::upgrade) else {
+                        return;
+                    };
+                    RangeDiffView::open_against_default_branch(
+                        target.clone(),
+                        repository,
+                        workspace.clone(),
                         window,
                         cx,
                     );

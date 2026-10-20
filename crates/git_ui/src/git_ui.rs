@@ -52,6 +52,7 @@ mod git_runtime_diagnostics;
 pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;
+pub mod range_diff_view;
 pub(crate) mod remote_output;
 pub mod repository_selector;
 pub mod solo_diff_view;
@@ -1678,6 +1679,7 @@ mod view_commit_tests {
 
         context_menu.update_in(cx, |menu, window, cx| {
             menu.select_first(&menu::SelectFirst, window, cx);
+            menu.select_next(&menu::SelectNext, window, cx);
             menu.select_next(&menu::SelectNext, window, cx);
             menu.select_next(&menu::SelectNext, window, cx);
             menu.confirm(&Confirm, window, cx);
