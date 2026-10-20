@@ -854,6 +854,7 @@ pub trait GitRepository: Send + Sync {
     fn branches(&self) -> BoxFuture<'_, Result<BranchesScanResult>>;
 
     fn change_branch(&self, name: String) -> BoxFuture<'_, Result<()>>;
+    fn checkout_detached(&self, commit: String) -> BoxFuture<'_, Result<()>>;
     fn create_branch(&self, name: String, base_branch: Option<String>)
     -> BoxFuture<'_, Result<()>>;
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>>;
@@ -2362,6 +2363,18 @@ impl GitRepository for RealGitRepository {
                 } else {
                     git_binary.run(&["checkout", &branch_name]).await?;
                 }
+                anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn checkout_detached(&self, commit: String) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+        self.executor
+            .spawn(async move {
+                git_binary?
+                    .run(&["checkout", "--detach", &commit, "--"])
+                    .await?;
                 anyhow::Ok(())
             })
             .boxed()
@@ -4752,6 +4765,43 @@ mod tests {
         );
         assert_eq!(file.new_content.as_deref(), Some(b"target".as_slice()));
         assert_eq!(file.status(), CommitFileStatus::Modified);
+    }
+
+    #[gpui::test]
+    async fn test_checkout_detached(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().expect("failed to create temporary repository");
+        git_init_repo(repo_dir.path());
+        fs::write(repo_dir.path().join("file.txt"), "one\n").expect("failed to write file");
+        git_command(repo_dir.path(), ["add", "file.txt"]);
+        git_command(repo_dir.path(), ["commit", "-m", "first"]);
+        fs::write(repo_dir.path().join("file.txt"), "two\n").expect("failed to write file");
+        git_command(repo_dir.path(), ["commit", "-am", "second"]);
+
+        let repository = RealGitRepository::new(
+            &repo_dir.path().join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .expect("failed to open repository");
+        let git = repository.git_binary();
+        let first = git
+            .run(&["rev-parse", "HEAD~1"])
+            .await
+            .expect("failed to resolve first commit");
+
+        repository
+            .checkout_detached(first.clone())
+            .await
+            .expect("failed to check out detached");
+
+        let head = git.run(&["rev-parse", "HEAD"]).await.expect("no HEAD");
+        assert_eq!(head, first);
+        let symbolic = git.run(&["symbolic-ref", "-q", "HEAD"]).await;
+        assert!(symbolic.is_err(), "HEAD should be detached");
     }
 
     #[gpui::test]

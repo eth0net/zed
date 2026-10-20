@@ -1040,6 +1040,14 @@ impl GitRepository for FakeGitRepository {
         async { Ok(()) }.boxed()
     }
 
+    fn checkout_detached(&self, commit: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            state.current_branch_name = None;
+            state.refs.insert("HEAD".into(), commit);
+            Ok(())
+        })
+    }
+
     fn change_branch(&self, name: String) -> BoxFuture<'_, Result<()>> {
         self.with_state_async(true, |state| {
             state.current_branch_name = Some(name);
