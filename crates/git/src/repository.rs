@@ -631,6 +631,20 @@ async fn read_shallow_file(shallow_file_path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// The remote named by `checkout.defaultRemote`, which git itself uses when a
+/// branch name matches more than one remote.
+async fn checkout_default_remote(git: &GitBinary) -> Result<Option<Remote>> {
+    let output = git
+        .build_command(&["config", "--get", "checkout.defaultRemote"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!name.is_empty()).then(|| Remote { name: name.into() }))
+}
+
 async fn is_shallow_boundary_commit(
     git: &GitBinary,
     shallow_file_path: &Path,
@@ -2959,7 +2973,7 @@ impl GitRepository for RealGitRepository {
                     .output()
                     .await?;
                 if !output.status.success() {
-                    return Ok(None);
+                    return checkout_default_remote(&git).await;
                 }
                 let remote_name = String::from_utf8_lossy(&output.stdout)
                     .split('/')
@@ -2983,7 +2997,7 @@ impl GitRepository for RealGitRepository {
                     .output()
                     .await?;
                 if !output.status.success() {
-                    return Ok(None);
+                    return checkout_default_remote(&git).await;
                 }
 
                 let remote_name = String::from_utf8_lossy(&output.stdout);
@@ -3018,7 +3032,11 @@ impl GitRepository for RealGitRepository {
                     })
                     .collect();
 
-                Ok(remote_names.into_iter().collect())
+                let mut remotes: Vec<Remote> = remote_names.into_iter().collect();
+                remotes.sort_by(|a, b| {
+                    (a.name != "origin", &a.name).cmp(&(b.name != "origin", &b.name))
+                });
+                Ok(remotes)
             })
             .boxed()
     }
@@ -4752,6 +4770,77 @@ mod tests {
         );
         assert_eq!(file.new_content.as_deref(), Some(b"target".as_slice()));
         assert_eq!(file.status(), CommitFileStatus::Modified);
+    }
+
+    #[gpui::test]
+    async fn test_remotes_fall_back_to_checkout_default_remote(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().expect("failed to create temporary repository");
+        git_init_repo(repo_dir.path());
+        fs::write(repo_dir.path().join("file.txt"), "one\n").expect("failed to write file");
+        git_command(repo_dir.path(), ["add", "file.txt"]);
+        git_command(repo_dir.path(), ["commit", "-m", "first"]);
+        git_command(repo_dir.path(), ["branch", "-M", "main"]);
+        for remote in ["upstream", "origin", "mirror"] {
+            git_command(
+                repo_dir.path(),
+                [
+                    "remote",
+                    "add",
+                    remote,
+                    &format!("https://example.com/{remote}.git"),
+                ],
+            );
+        }
+
+        let repository = RealGitRepository::new(
+            &repo_dir.path().join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .expect("failed to open repository");
+
+        let names = |remotes: Vec<Remote>| {
+            remotes
+                .into_iter()
+                .map(|remote| remote.name.to_string())
+                .collect::<Vec<_>>()
+        };
+        let all_remotes = repository
+            .get_all_remotes()
+            .await
+            .expect("failed to list remotes");
+        assert_eq!(names(all_remotes), ["origin", "mirror", "upstream"]);
+
+        async fn branch_remote(
+            repository: &RealGitRepository,
+        ) -> (Option<SharedString>, Option<SharedString>) {
+            let push = repository
+                .get_push_remote("main".into())
+                .await
+                .expect("push remote");
+            let pull = repository
+                .get_branch_remote("main".into())
+                .await
+                .expect("branch remote");
+            (
+                push.map(|remote| remote.name),
+                pull.map(|remote| remote.name),
+            )
+        }
+        assert_eq!(branch_remote(&repository).await, (None, None));
+
+        git_command(
+            repo_dir.path(),
+            ["config", "checkout.defaultRemote", "mirror"],
+        );
+        assert_eq!(
+            branch_remote(&repository).await,
+            (Some("mirror".into()), Some("mirror".into()))
+        );
     }
 
     #[gpui::test]
