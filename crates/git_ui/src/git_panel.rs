@@ -4650,7 +4650,13 @@ impl GitPanel {
         .detach();
     }
 
-    pub(crate) fn pull(&mut self, rebase: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn pull(
+        &mut self,
+        rebase: bool,
+        select_remote: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.can_push_and_pull(cx) {
             return;
         }
@@ -4665,7 +4671,7 @@ impl GitPanel {
         }
 
         telemetry::event!("Git Pulled");
-        let remote = self.get_remote(false, false, window, cx);
+        let remote = self.get_remote(select_remote, false, window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let _clear_pending_remote_operation = cx.on_drop(&this, |this, cx| {
                 this.clear_remote_operation(cx);
@@ -4688,10 +4694,13 @@ impl GitPanel {
                 this.askpass_delegate(format!("git pull {}", remote.name), window, cx)
             })?;
 
-            let branch_name = branch
+            // Without a branch, git only knows what to merge from the upstream's remote.
+            let pulls_from_upstream = branch
                 .upstream
-                .is_none()
-                .then(|| branch.name().to_owned().into());
+                .as_ref()
+                .and_then(|upstream| upstream.remote_name())
+                .is_some_and(|upstream_remote| upstream_remote == remote.name.as_ref());
+            let branch_name = (!pulls_from_upstream).then(|| branch.name().to_owned().into());
 
             let pull = repo.update(cx, |repo, cx| {
                 repo.pull(branch_name, remote.name.clone(), rebase, askpass, cx)
@@ -4992,7 +5001,11 @@ impl GitPanel {
             let selection = cx
                 .update(|window, cx| {
                     picker_prompt::prompt(
-                        "Pick which remote to push to",
+                        if is_push {
+                            "Pick which remote to push to"
+                        } else {
+                            "Pick which remote to pull from"
+                        },
                         current_remotes.clone(),
                         workspace,
                         window,
