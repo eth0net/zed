@@ -16054,15 +16054,27 @@ async fn test_drag_project_header_onto_another(cx: &mut TestAppContext) {
         });
         bounds.origin + gpui::point(bounds.size.width / 2., px(8.))
     };
-    let drag = |from: usize, to: usize, cx: &mut VisualTestContext| {
+    let empty_row_point = |ix: usize, cx: &mut VisualTestContext| {
+        let bounds = sidebar.read_with(cx, |sidebar, _| {
+            sidebar
+                .list_state
+                .bounds_for_item(ix)
+                .expect("rendered project header")
+        });
+        bounds.origin + gpui::point(bounds.size.width / 2., bounds.size.height - px(8.))
+    };
+    let drag_to = |from: usize, target: Point<Pixels>, cx: &mut VisualTestContext| {
         let source = header_point(from, cx);
-        let target = header_point(to, cx);
         cx.simulate_mouse_down(source, gpui::MouseButton::Left, Modifiers::default());
         cx.run_until_parked();
         cx.simulate_mouse_move(target, gpui::MouseButton::Left, Modifiers::default());
         cx.run_until_parked();
         cx.simulate_mouse_up(target, gpui::MouseButton::Left, Modifiers::default());
         cx.run_until_parked();
+    };
+    let drag = |from: usize, to: usize, cx: &mut VisualTestContext| {
+        let target = header_point(to, cx);
+        drag_to(from, target, cx);
     };
 
     drag(0, 2, cx);
@@ -16075,5 +16087,13 @@ async fn test_drag_project_header_onto_another(cx: &mut TestAppContext) {
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
         vec!["v [project-b]", "v [project-c]", "v [project-a]"]
+    );
+
+    // Dropping on a group's rows below its header counts as dropping on the group.
+    let target = empty_row_point(0, cx);
+    drag_to(2, target, cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [project-a]", "v [project-b]", "v [project-c]"]
     );
 }
