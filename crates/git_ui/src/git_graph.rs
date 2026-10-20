@@ -14,7 +14,7 @@ use file_icons::FileIcons;
 use git::{
     BuildCommitPermalinkParams, GitHostingProviderRegistry, GitRemote, Oid, ParsedGitRemote,
     parse_git_remote_url,
-    repository::{InitialGraphCommitData, LogOrder, LogSource, RepoPath, SearchCommitArgs},
+    repository::{Branch, InitialGraphCommitData, LogOrder, LogSource, RepoPath, SearchCommitArgs},
     status::{FileStatus, StatusCode, TrackedStatus},
 };
 use gpui::{
@@ -1874,6 +1874,47 @@ impl GitGraph {
         })
     }
 
+    /// Orders `%D` decorations by how useful they are as a commit's label: the
+    /// checked-out branch, local branches, remote branches a local branch
+    /// tracks, other remote branches, then tags.
+    fn ranked_ref_names(
+        ref_names: &[SharedString],
+        head_branch_name: &Option<SharedString>,
+        branch_list: &[Branch],
+    ) -> Vec<SharedString> {
+        let rank = |decoration: &str| {
+            if Self::is_head_ref(decoration, head_branch_name) {
+                return 0;
+            }
+            if decoration.starts_with("tag: ") {
+                return 4;
+            }
+            let is_local_branch = branch_list
+                .iter()
+                .any(|branch| !branch.is_remote() && branch.name() == decoration);
+            if is_local_branch {
+                return 1;
+            }
+            let remote_ref_name = format!("refs/remotes/{decoration}");
+            let is_remote_branch = branch_list
+                .iter()
+                .any(|branch| branch.ref_name.as_ref() == remote_ref_name);
+            if !is_remote_branch {
+                return 5;
+            }
+            let is_tracked = branch_list.iter().any(|branch| {
+                branch
+                    .upstream
+                    .as_ref()
+                    .is_some_and(|upstream| upstream.ref_name.as_ref() == remote_ref_name)
+            });
+            if is_tracked { 2 } else { 3 }
+        };
+        let mut ranked = ref_names.to_vec();
+        ranked.sort_by_key(|name| rank(name.as_ref()));
+        ranked
+    }
+
     /// Extracts a ref name (branch, remote ref, or tag) from a decoration in
     /// git's `%D` format, returning `None` for a detached `HEAD`.
     fn ref_name_from_decoration(decoration: &str) -> Option<SharedString> {
@@ -3039,14 +3080,17 @@ impl GitGraph {
 
         let full_sha: SharedString = commit_entry.data.sha.to_string().into();
         let short_sha: SharedString = full_sha.chars().take(7).collect::<String>().into();
-        let ref_names = commit_entry.data.ref_names.clone();
-
         let head_branch_name: Option<SharedString> = repository
             .read(cx)
             .snapshot()
             .branch
             .as_ref()
             .map(|branch| SharedString::from(branch.name().to_string()));
+        let ref_names = Self::ranked_ref_names(
+            &commit_entry.data.ref_names,
+            &head_branch_name,
+            &repository.read(cx).snapshot().branch_list,
+        );
 
         let accent_colors = cx.theme().accents();
         let accent_color = accent_colors
@@ -3882,13 +3926,17 @@ impl GitGraph {
         let viewport_range = first_visible_row.min(loaded_commit_count.saturating_sub(1))
             ..last_visible_row.min(loaded_commit_count);
 
-        let head_branch_name: Option<SharedString> = self.get_repository(cx).and_then(|repo| {
-            repo.read(cx)
-                .snapshot()
-                .branch
-                .as_ref()
-                .map(|branch| SharedString::from(branch.name().to_string()))
-        });
+        let (head_branch_name, branch_list) = self
+            .get_repository(cx)
+            .map(|repo| {
+                let snapshot = repo.read(cx).snapshot();
+                let head_branch_name = snapshot
+                    .branch
+                    .as_ref()
+                    .map(|branch| SharedString::from(branch.name().to_string()));
+                (head_branch_name, snapshot.branch_list.clone())
+            })
+            .unwrap_or_default();
 
         let theme = cx.theme();
         let accent_colors = theme.accents().clone();
@@ -3949,22 +3997,16 @@ impl GitGraph {
             let visible_row_idx = absolute_idx - first_visible_row;
             let top = visible_row_idx as f32 * row_height - vertical_scroll_offset;
             let accent_color = accent_colors.color_for_index(commit.color_idx as u32);
-            let ref_names = commit.data.ref_names.clone();
+            let ref_names =
+                Self::ranked_ref_names(&commit.data.ref_names, &head_branch_name, &branch_list);
 
             // When a commit carries multiple refs we only render a single badge
-            // (preferring the checked-out branch, falling back to the first ref)
             // plus a "+N" counter, so the gutter stays legible instead of
             // cramming several truncated chips together.
-            let (primary_name, is_head) = match ref_names
-                .iter()
-                .find(|name| Self::is_head_ref(name.as_ref(), &head_branch_name))
-            {
-                Some(head_ref) => (head_ref.clone(), true),
-                None => match ref_names.first() {
-                    Some(first) => (first.clone(), false),
-                    None => continue,
-                },
+            let Some(primary_name) = ref_names.first().cloned() else {
+                continue;
             };
+            let is_head = Self::is_head_ref(primary_name.as_ref(), &head_branch_name);
 
             let primary_chip = self.render_ref_chip(
                 primary_name.clone(),
@@ -5368,6 +5410,41 @@ mod tests {
     use smallvec::{SmallVec, smallvec};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_ranked_ref_names_prefer_local_then_tracked_remote() {
+        let branch = |ref_name: &str, upstream: Option<&str>| Branch {
+            is_head: false,
+            ref_name: ref_name.to_owned().into(),
+            upstream: upstream.map(|upstream| git::repository::Upstream {
+                ref_name: upstream.to_owned().into(),
+                tracking: git::repository::UpstreamTracking::Gone,
+            }),
+            most_recent_commit: None,
+        };
+        let branch_list = [
+            branch("refs/heads/main", Some("refs/remotes/origin/main")),
+            branch("refs/heads/topic", None),
+            branch("refs/remotes/origin/main", None),
+            branch("refs/remotes/mirror/main", None),
+        ];
+        let ref_names: Vec<SharedString> = vec![
+            "tag: v1.0".into(),
+            "mirror/main".into(),
+            "origin/main".into(),
+            "topic".into(),
+            "main".into(),
+        ];
+
+        assert_eq!(
+            GitGraph::ranked_ref_names(&ref_names, &None, &branch_list),
+            ["topic", "main", "origin/main", "mirror/main", "tag: v1.0"]
+        );
+        assert_eq!(
+            GitGraph::ranked_ref_names(&ref_names, &Some("main".into()), &branch_list),
+            ["main", "topic", "origin/main", "mirror/main", "tag: v1.0"]
+        );
+    }
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
