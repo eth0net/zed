@@ -304,6 +304,40 @@ fn decode_commit_diff(diff: git::repository::CommitDiff) -> CommitDiff {
     }
 }
 
+fn commit_diff_to_proto(commit_diff: CommitDiff) -> proto::LoadCommitDiffResponse {
+    proto::LoadCommitDiffResponse {
+        files: commit_diff
+            .files
+            .into_iter()
+            .map(|file| proto::CommitFile {
+                path: file.path.as_unix_str().to_owned(),
+                old_text: file.old_text,
+                new_text: file.new_text,
+                is_binary: file.is_binary,
+            })
+            .collect(),
+        is_shallow_boundary: commit_diff.is_shallow_boundary,
+    }
+}
+
+fn commit_diff_from_proto(response: proto::LoadCommitDiffResponse) -> Result<CommitDiff> {
+    Ok(CommitDiff {
+        files: response
+            .files
+            .into_iter()
+            .map(|file| {
+                Ok(CommitFile {
+                    path: RepoPath::from_proto(&file.path)?,
+                    old_text: file.old_text,
+                    new_text: file.new_text,
+                    is_binary: file.is_binary,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        is_shallow_boundary: response.is_shallow_boundary,
+    })
+}
+
 #[derive(Clone, Debug)]
 enum DiffBasesChange {
     SetIndex(Option<String>),
@@ -1072,6 +1106,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_compare_checkpoints);
         client.add_entity_request_handler(Self::handle_diff_checkpoints);
         client.add_entity_request_handler(Self::handle_load_commit_diff);
+        client.add_entity_request_handler(Self::handle_load_range_diff);
         client.add_entity_request_handler(Self::handle_checkout_files);
         client.add_entity_request_handler(Self::handle_add_path_to_gitignore);
         client.add_entity_request_handler(Self::handle_add_path_to_git_info_exclude);
@@ -4595,19 +4630,27 @@ impl GitStore {
                 )
             })
             .await?;
-        Ok(proto::LoadCommitDiffResponse {
-            files: commit_diff
-                .files
-                .into_iter()
-                .map(|file| proto::CommitFile {
-                    path: file.path.as_unix_str().to_owned(),
-                    old_text: file.old_text,
-                    new_text: file.new_text,
-                    is_binary: file.is_binary,
-                })
-                .collect(),
-            is_shallow_boundary: commit_diff.is_shallow_boundary,
-        })
+        Ok(commit_diff_to_proto(commit_diff))
+    }
+
+    async fn handle_load_range_diff(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::LoadRangeDiff>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::LoadCommitDiffResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+
+        let range_diff = repository_handle
+            .update(&mut cx, |repository_handle, cx| {
+                repository_handle.load_range_diff(
+                    envelope.payload.base,
+                    envelope.payload.target,
+                    cx,
+                )
+            })
+            .await?;
+        Ok(commit_diff_to_proto(range_diff))
     }
 
     async fn handle_reset(
@@ -7312,21 +7355,40 @@ impl Repository {
                             ignore_shallow_boundary,
                         })
                         .await?;
-                    Ok(CommitDiff {
-                        files: response
-                            .files
-                            .into_iter()
-                            .map(|file| {
-                                Ok(CommitFile {
-                                    path: RepoPath::from_proto(&file.path)?,
-                                    old_text: file.old_text,
-                                    new_text: file.new_text,
-                                    is_binary: file.is_binary,
-                                })
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                        is_shallow_boundary: response.is_shallow_boundary,
-                    })
+                    commit_diff_from_proto(response)
+                }
+            }
+        })
+    }
+
+    pub fn load_range_diff(
+        &self,
+        base: String,
+        target: String,
+        cx: &App,
+    ) -> Task<Result<CommitDiff>> {
+        let id = self.id;
+        let repository_state = self.repository_state.clone();
+        let object_read_limiter = self.object_read_limiter.clone();
+        cx.spawn(async move |cx| {
+            let _permit = object_read_limiter.acquire_arc().await;
+            match repository_state.await.map_err(|err| anyhow::anyhow!(err))? {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => backend
+                    .load_range_diff(base, target, cx.clone())
+                    .await
+                    .map(decode_commit_diff),
+                RepositoryState::Remote(RemoteRepositoryState {
+                    client, project_id, ..
+                }) => {
+                    let response = client
+                        .request(proto::LoadRangeDiff {
+                            project_id: project_id.0,
+                            repository_id: id.to_proto(),
+                            base,
+                            target,
+                        })
+                        .await?;
+                    commit_diff_from_proto(response)
                 }
             }
         })
