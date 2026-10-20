@@ -2,7 +2,8 @@ pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, OpenCommitVie
 use crate::{
     commit_context_menu::{
         CUSTOM_GIT_COMMANDS_DOCS_SLUG, CommitContextMenuData, CommitContextMenuSource,
-        commit_context_menu, git_context_menu_tasks, git_task_context,
+        branch_to_check_out, check_out_branch, commit_context_menu, git_context_menu_tasks,
+        git_task_context,
     },
     commit_tooltip::CommitAvatar,
     commit_view::CommitView,
@@ -1392,6 +1393,8 @@ struct GitGraphContextMenu {
 #[derive(Clone)]
 struct RefMenuEntry {
     ref_name: Option<SharedString>,
+    branch_to_check_out: Option<SharedString>,
+    repository: Option<WeakEntity<Repository>>,
     git_tasks: Vec<(TaskSourceKind, ResolvedTask)>,
 }
 
@@ -1402,6 +1405,20 @@ impl RefMenuEntry {
         git_graph: &Entity<GitGraph>,
         window: &mut Window,
     ) -> ContextMenu {
+        if let Some(branch_name) = self.branch_to_check_out {
+            let repository = self.repository.clone();
+            menu = menu.entry(
+                format!("Checkout {branch_name}"),
+                None,
+                move |window, cx| {
+                    let Some(repository) = repository.as_ref().and_then(WeakEntity::upgrade) else {
+                        return;
+                    };
+                    check_out_branch(branch_name.clone(), repository, window, cx);
+                },
+            );
+        }
+
         if let Some(ref_name) = self.ref_name {
             menu = menu.entry("Copy Ref Name", None, move |_window, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(ref_name.to_string()));
@@ -2762,9 +2779,13 @@ impl GitGraph {
     /// same entries can be rendered both as a standalone menu and as a submenu.
     fn ref_menu_entry(&self, sha: Oid, name: &SharedString, cx: &App) -> RefMenuEntry {
         let ref_name = Self::ref_name_from_decoration(name);
-        let repository = self
-            .get_repository(cx)
-            .map(|repository| repository.downgrade());
+        let repository_entity = self.get_repository(cx);
+        let branch_to_check_out = repository_entity.as_ref().and_then(|repository| {
+            let is_tag = name.starts_with("tag: ");
+            let ref_name = ref_name.as_ref().filter(|_| !is_tag)?;
+            branch_to_check_out(ref_name, &repository.read(cx).snapshot().branch_list)
+        });
+        let repository = repository_entity.map(|repository| repository.downgrade());
         let git_tasks = git_context_menu_tasks(
             git_task_context(&repository, sha, ref_name.as_deref(), cx),
             &self.workspace,
@@ -2772,6 +2793,8 @@ impl GitGraph {
         );
         RefMenuEntry {
             ref_name,
+            branch_to_check_out,
+            repository,
             git_tasks,
         }
     }
@@ -3934,7 +3957,7 @@ impl GitGraph {
                     .branch
                     .as_ref()
                     .map(|branch| SharedString::from(branch.name().to_string()));
-                (head_branch_name, snapshot.branch_list.clone())
+                (head_branch_name, snapshot.branch_list)
             })
             .unwrap_or_default();
 
@@ -5444,6 +5467,88 @@ mod tests {
             GitGraph::ranked_ref_names(&ref_names, &Some("main".into()), &branch_list),
             ["main", "topic", "origin/main", "mirror/main", "tag: v1.0"]
         );
+    }
+
+    #[test]
+    fn test_branch_to_check_out_never_repoints_an_upstream() {
+        let branch = |ref_name: &str, upstream: Option<&str>| Branch {
+            is_head: false,
+            ref_name: ref_name.to_owned().into(),
+            upstream: upstream.map(|upstream| git::repository::Upstream {
+                ref_name: upstream.to_owned().into(),
+                tracking: git::repository::UpstreamTracking::Gone,
+            }),
+            most_recent_commit: None,
+        };
+        let branch_list = [
+            branch("refs/heads/main", Some("refs/remotes/origin/main")),
+            branch("refs/remotes/origin/main", None),
+            branch("refs/remotes/mirror/main", None),
+            branch("refs/remotes/origin/topic", None),
+        ];
+        let check_out = |ref_name| {
+            crate::commit_context_menu::branch_to_check_out(ref_name, &branch_list)
+                .map(|name| name.to_string())
+        };
+
+        assert_eq!(check_out("main").as_deref(), Some("main"));
+        assert_eq!(check_out("origin/main").as_deref(), Some("main"));
+        assert_eq!(
+            check_out("origin/topic").as_deref(),
+            Some("origin/topic"),
+            "a remote branch with no local namesake gets a new tracking branch"
+        );
+        assert_eq!(
+            check_out("mirror/main"),
+            None,
+            "main already tracks origin/main"
+        );
+        assert_eq!(check_out("v1.0"), None);
+    }
+
+    #[gpui::test]
+    async fn test_check_out_detached_confirms_uncommitted_changes(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(Path::new("/project"), json!({ ".git": {}, "file.txt": "" }))
+            .await;
+        fs.with_git_state(Path::new("/project/.git"), false, |state| {
+            state.current_branch_name = Some("main".into());
+        })
+        .expect("fake repository should exist");
+        let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
+        cx.run_until_parked();
+        let repository = project.read_with(cx, |project, cx| {
+            project
+                .active_repository(cx)
+                .expect("should have a repository")
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+
+        let sha = Oid::from_bytes(&[7; 20]).expect("valid commit SHA");
+        cx.update(|window, cx| {
+            crate::commit_context_menu::check_out_detached(sha, repository.clone(), window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.has_pending_prompt(),
+            "the untracked file should prompt before checking out"
+        );
+        cx.simulate_prompt_answer("Checkout Detached");
+        cx.run_until_parked();
+
+        let (branch, head) = fs
+            .with_git_state(Path::new("/project/.git"), false, |state| {
+                (
+                    state.current_branch_name.clone(),
+                    state.refs.get("HEAD").cloned(),
+                )
+            })
+            .expect("fake repository should exist");
+        assert_eq!(branch, None);
+        assert_eq!(head, Some(sha.to_string()));
     }
 
     fn init_test(cx: &mut TestAppContext) {
