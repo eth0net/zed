@@ -19,6 +19,7 @@ them, and is what gets built.
 | `git-diff-any-target`                  | —           | not yet proposed |
 | `git-graph-refs`                       | —           | not yet proposed |
 | `git-remotes`                          | —           | not yet proposed |
+| `keep-projects-when-ai-off`            | —           | not yet proposed |
 | `release-channel-fork`                 | —           | fork-only        |
 
 `release-channel-fork` adds the Fork release channel ("Zed Fork",
@@ -44,9 +45,8 @@ tests for the crates the branches touch (`workspace`, `sidebar`,
 - Sidebar data loss:
   - The session id is written before restore finishes.
   - Window project lists are keyed by a window id macOS reuses.
-  - Turning AI off clears every project group.
 - Reopen Closed Window.
-- Sidebar drag: accept drops on a group's threads, and scroll while dragging.
+- Sidebar drag: scroll while dragging.
 - Upstream `bundle-mac -i` tries to build a DMG from an app it has already
   installed; fixed on `release-channel-fork`, worth its own upstream PR.
 - Later: clean up stale workspace rows and window state, a saved projects
