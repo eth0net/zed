@@ -1,12 +1,15 @@
 use crate::{commit_view::CommitView, create_tag_at_commit, range_diff_view::RangeDiffView};
 use git::Oid;
-use gpui::{Action, ClipboardItem, Entity, FocusHandle, SharedString, WeakEntity, Window, actions};
+use gpui::{
+    Action, ClipboardItem, Entity, FocusHandle, PromptLevel, SharedString, WeakEntity, Window,
+    actions,
+};
 use project::{GIT_COMMAND_TASK_TAG, git_store::Repository};
 
 use task::{TaskContext, TaskVariables, VariableName};
 use ui::{Color, ContextMenu, ContextMenuEntry, IconName, IconPosition, prelude::*};
 use util::ResultExt as _;
-use workspace::Workspace;
+use workspace::{Workspace, notifications::DetachAndPromptErr as _};
 
 actions!(
     git_graph,
@@ -162,6 +165,15 @@ pub(crate) fn commit_context_menu(
                         .log_err();
                 }
             })
+            .entry("Checkout Detached", None, {
+                let repository = repository.clone();
+                move |window, cx| {
+                    let Some(repository) = repository.as_ref().and_then(WeakEntity::upgrade) else {
+                        return;
+                    };
+                    check_out_detached(sha, repository, window, cx);
+                }
+            })
             .when(source == CommitContextMenuSource::GitPanel, |menu| {
                 menu.entry("Show in Git Graph", None, move |window, cx| {
                     window.dispatch_action(
@@ -273,4 +285,85 @@ pub(crate) fn git_context_menu_tasks(
     task_inventory
         .read(cx)
         .resolve_global_tasks_with_tag(GIT_COMMAND_TASK_TAG, &task_context)
+}
+
+/// The local branch that checking out `ref_name` should switch to, if it can
+/// be done without repointing another branch's upstream.
+pub(crate) fn branch_to_check_out(
+    ref_name: &str,
+    branch_list: &[git::repository::Branch],
+) -> Option<SharedString> {
+    if branch_list
+        .iter()
+        .any(|branch| !branch.is_remote() && branch.name() == ref_name)
+    {
+        return Some(ref_name.to_owned().into());
+    }
+    let remote_ref_name = format!("refs/remotes/{ref_name}");
+    if !branch_list
+        .iter()
+        .any(|branch| branch.ref_name.as_ref() == remote_ref_name)
+    {
+        return None;
+    }
+    if let Some(tracking) = branch_list.iter().find(|branch| {
+        !branch.is_remote()
+            && branch
+                .upstream
+                .as_ref()
+                .is_some_and(|upstream| upstream.ref_name.as_ref() == remote_ref_name)
+    }) {
+        return Some(tracking.name().to_owned().into());
+    }
+    let (_, short_name) = ref_name.split_once('/')?;
+    let short_name_is_free = !branch_list
+        .iter()
+        .any(|branch| !branch.is_remote() && branch.name() == short_name);
+    short_name_is_free.then(|| ref_name.to_owned().into())
+}
+
+pub(crate) fn check_out_branch(
+    branch_name: SharedString,
+    repository: Entity<Repository>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let change_branch = repository.update(cx, |repository, _| {
+        repository.change_branch(branch_name.to_string())
+    });
+    window
+        .spawn(cx, async move |_| change_branch.await?)
+        .detach_and_prompt_err("Failed to check out branch", window, cx, |_, _, _| None);
+}
+
+pub(crate) fn check_out_detached(
+    sha: Oid,
+    repository: Entity<Repository>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let has_changes = repository.read(cx).cached_status().next().is_some();
+    let answer = has_changes.then(|| {
+        window.prompt(
+            PromptLevel::Warning,
+            "You have uncommitted changes",
+            Some("Git carries them over to the checkout, and stops if any would conflict."),
+            &["Checkout Detached", "Cancel"],
+            cx,
+        )
+    });
+    window
+        .spawn(cx, async move |cx| {
+            if let Some(answer) = answer
+                && answer.await != Ok(0)
+            {
+                return Ok(());
+            }
+            repository
+                .update(cx, |repository, _| {
+                    repository.checkout_detached(sha.to_string())
+                })
+                .await?
+        })
+        .detach_and_prompt_err("Failed to check out commit", window, cx, |_, _, _| None);
 }

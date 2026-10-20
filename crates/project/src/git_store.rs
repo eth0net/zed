@@ -1080,6 +1080,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_get_branches);
         client.add_entity_request_handler(Self::handle_get_default_branch);
         client.add_entity_request_handler(Self::handle_change_branch);
+        client.add_entity_request_handler(Self::handle_checkout_detached);
         client.add_entity_request_handler(Self::handle_create_branch);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
@@ -4378,6 +4379,24 @@ impl GitStore {
         repository_handle
             .update(&mut cx, |repository_handle, _| {
                 repository_handle.change_branch(branch_name)
+            })
+            .await??;
+
+        Ok(proto::Ack {})
+    }
+
+    async fn handle_checkout_detached(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitCheckoutDetached>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let commit = envelope.payload.commit;
+
+        repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.checkout_detached(commit)
             })
             .await??;
 
@@ -9932,6 +9951,32 @@ impl Repository {
                                 project_id: project_id.0,
                                 repository_id: id.to_proto(),
                                 branch_name,
+                            })
+                            .await?;
+
+                        Ok(())
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn checkout_detached(&mut self, commit: String) -> oneshot::Receiver<Result<()>> {
+        let id = self.id;
+        self.send_job(
+            "checkout_detached",
+            Some(format!("git checkout --detach {commit}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.checkout_detached(commit).await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        client
+                            .request(proto::GitCheckoutDetached {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                commit,
                             })
                             .await?;
 

@@ -199,6 +199,12 @@ message GitCreateBranch {
   optional string base_branch = 5;
 }
 
+message GitCheckoutDetached {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  string commit = 3;
+}
+
 message GitChangeBranch {
   uint64 project_id = 1;
   reserved 2;
