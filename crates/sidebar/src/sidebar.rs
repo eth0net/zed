@@ -28,10 +28,10 @@ use feature_flags::{
     AgentThreadWorktreeLabel, AgentThreadWorktreeLabelFlag, FeatureFlag, FeatureFlagAppExt as _,
 };
 use gpui::{
-    Action as _, AnyElement, App, ClickEvent, Context, Decorations, DismissEvent, Entity, EntityId,
-    FocusHandle, Focusable, KeyContext, ListState, Modifiers, Pixels, Render, SharedString, Task,
-    TaskExt, WeakEntity, Window, WindowBackgroundAppearance, WindowHandle, linear_color_stop,
-    linear_gradient, list, prelude::*, px,
+    Action as _, AnyElement, App, ClickEvent, Context, Decorations, DismissEvent, Div, Entity,
+    EntityId, FocusHandle, Focusable, KeyContext, ListState, Modifiers, Pixels, Render,
+    SharedString, Stateful, Task, TaskExt, WeakEntity, Window, WindowBackgroundAppearance,
+    WindowHandle, linear_color_stop, linear_gradient, list, prelude::*, px,
 };
 use itertools::Itertools;
 use language_model::LanguageModelRegistry;
@@ -2303,6 +2303,16 @@ impl Sidebar {
             }
         };
 
+        let rendered = match self.project_group_key_for_entry(ix) {
+            Some(key) if !self.has_filter_query(cx) => self.project_group_drop_target(
+                rendered,
+                format!("project-group-drop-target-{ix}").into(),
+                key,
+                cx,
+            ),
+            _ => rendered,
+        };
+
         if is_group_header_after_first {
             v_flex()
                 .w_full()
@@ -2313,6 +2323,59 @@ impl Sidebar {
         } else {
             rendered
         }
+    }
+
+    fn project_group_key_for_entry(&self, ix: usize) -> Option<ProjectGroupKey> {
+        let header_ix = self
+            .contents
+            .project_header_indices
+            .iter()
+            .rev()
+            .find(|header_ix| **header_ix <= ix)?;
+        match self.contents.entries.get(*header_ix)? {
+            ListEntry::ProjectHeader { key, .. } => Some(key.clone()),
+            _ => None,
+        }
+    }
+
+    /// Lets a dragged project header be dropped on `element`, moving it into
+    /// `key`'s position.
+    fn accept_project_group_drop(
+        &self,
+        element: Stateful<Div>,
+        key: ProjectGroupKey,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let key_for_drag_over = key.clone();
+        element
+            .drag_over::<DraggedProjectGroup>(move |style, dragged, _, cx| {
+                if dragged.key == key_for_drag_over {
+                    style
+                } else {
+                    style.bg(cx.theme().colors().drop_target_background)
+                }
+            })
+            .on_drop(
+                cx.listener(move |this, dragged: &DraggedProjectGroup, _, cx| {
+                    this.multi_workspace
+                        .update(cx, |multi_workspace, cx| {
+                            multi_workspace.move_project_group(&dragged.key, &key, cx);
+                        })
+                        .ok();
+                }),
+            )
+    }
+
+    fn project_group_drop_target(
+        &self,
+        element: AnyElement,
+        id: SharedString,
+        key: ProjectGroupKey,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.accept_project_group_drop(div().id(id).w_full(), key, cx)
+            .child(element)
+            .into_any_element()
     }
 
     fn render_remote_project_icon(
@@ -2371,8 +2434,6 @@ impl Sidebar {
 
         let key_for_toggle = key.clone();
         let key_for_focus = key.clone();
-        let key_for_drag_over = key.clone();
-        let key_for_drop = key.clone();
         let dragged_group = DraggedProjectGroup {
             key: key.clone(),
             label: label.clone(),
@@ -2445,26 +2506,6 @@ impl Sidebar {
                     .on_drag(dragged_group, |dragged, _, _, cx| {
                         cx.new(|_| dragged.clone())
                     })
-                    .drag_over::<DraggedProjectGroup>(move |style, dragged, _, cx| {
-                        if dragged.key == key_for_drag_over {
-                            style
-                        } else {
-                            style.bg(cx.theme().colors().drop_target_background)
-                        }
-                    })
-                    .on_drop(
-                        cx.listener(move |this, dragged: &DraggedProjectGroup, _, cx| {
-                            this.multi_workspace
-                                .update(cx, |multi_workspace, cx| {
-                                    multi_workspace.move_project_group(
-                                        &dragged.key,
-                                        &key_for_drop,
-                                        cx,
-                                    );
-                                })
-                                .ok();
-                        }),
-                    )
             })
             .child(
                 h_flex()
@@ -2578,6 +2619,12 @@ impl Sidebar {
                 }),
             )
             .block_mouse_except_scroll();
+        // The header blocks the mouse, so it has to accept drops itself.
+        let header = if has_filter {
+            header
+        } else {
+            self.accept_project_group_drop(header, key.clone(), cx)
+        };
 
         if !is_collapsed && !has_threads {
             v_flex()
@@ -3330,6 +3377,16 @@ impl Sidebar {
             *has_threads,
             cx,
         );
+        let header_element = if self.has_filter_query(cx) {
+            header_element
+        } else {
+            self.project_group_drop_target(
+                header_element,
+                "sticky-project-group-drop-target".into(),
+                key.clone(),
+                cx,
+            )
+        };
 
         let top_offset = self
             .contents
