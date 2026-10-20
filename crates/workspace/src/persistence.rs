@@ -301,7 +301,10 @@ impl From<WindowBoundsJson> for WindowBounds {
     }
 }
 
-fn read_multi_workspace_state(window_id: WindowId, cx: &App) -> model::MultiWorkspaceState {
+pub(crate) fn read_multi_workspace_state(
+    window_id: WindowId,
+    cx: &App,
+) -> model::MultiWorkspaceState {
     let kvp = KeyValueStore::global(cx);
     kvp.scoped("multi_workspace_state")
         .read(&window_id.as_u64().to_string())

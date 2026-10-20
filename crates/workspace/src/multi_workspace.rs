@@ -306,6 +306,9 @@ pub struct MultiWorkspace {
     window_id: WindowId,
     held: Vec<HeldWorkspace>,
     project_groups: Vec<ProjectGroupState>,
+    /// Groups set aside while multi-workspace is disabled, so they come back
+    /// when it is enabled again.
+    parked_project_groups: Vec<ProjectGroupState>,
     /// Source of truth for which workspace is presented in this window, shared
     /// with each member `Workspace` so they can tell whether they own the
     /// platform window's title and edited indicator. This only exists to prevent
@@ -355,6 +358,8 @@ impl MultiWorkspace {
                 let multi_workspace_enabled = this.multi_workspace_enabled(cx);
                 if previous_multi_workspace_enabled && !multi_workspace_enabled {
                     this.collapse_to_single_workspace(window, cx);
+                } else if !previous_multi_workspace_enabled && multi_workspace_enabled {
+                    this.unpark_project_groups(cx);
                 }
                 previous_multi_workspace_enabled = multi_workspace_enabled;
             }
@@ -373,6 +378,7 @@ impl MultiWorkspace {
                 activated_at: Some(0),
             }],
             project_groups: Vec::new(),
+            parked_project_groups: Vec::new(),
             active_workspace_id,
             sidebar: None,
             sidebar_open: false,
@@ -824,7 +830,7 @@ impl MultiWorkspace {
     pub fn restore_project_groups(
         &mut self,
         groups: Vec<SerializedProjectGroupState>,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         let mut restored: Vec<ProjectGroupState> = Vec::new();
         for SerializedProjectGroupState { key, expanded } in groups {
@@ -841,7 +847,24 @@ impl MultiWorkspace {
                 restored.push(existing);
             }
         }
-        self.project_groups = restored;
+        if self.multi_workspace_enabled(cx) {
+            self.project_groups = restored;
+        } else {
+            self.parked_project_groups = restored;
+        }
+    }
+
+    fn unpark_project_groups(&mut self, cx: &mut Context<Self>) {
+        let mut groups = std::mem::take(&mut self.parked_project_groups);
+        for existing in std::mem::take(&mut self.project_groups) {
+            if !groups.iter().any(|group| group.key == existing.key) {
+                groups.push(existing);
+            }
+        }
+        self.project_groups = groups;
+        cx.emit(MultiWorkspaceEvent::ProjectGroupsChanged);
+        self.serialize(cx);
+        cx.notify();
     }
 
     pub fn project_group_keys(&self) -> Vec<ProjectGroupKey> {
@@ -1425,7 +1448,8 @@ impl MultiWorkspace {
         for held in &mut self.held {
             held.pinned = false;
         }
-        self.project_groups.clear();
+        self.parked_project_groups = std::mem::take(&mut self.project_groups);
+        self.serialize(cx);
         cx.notify();
     }
 
@@ -1484,6 +1508,7 @@ impl MultiWorkspace {
             project_groups: self
                 .project_groups
                 .iter()
+                .chain(self.parked_project_groups.iter())
                 .map(|group| {
                     crate::persistence::model::SerializedProjectGroup::from_group(
                         &group.key,

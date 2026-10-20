@@ -47,6 +47,58 @@ fn setup_multi_workspace<'a>(
 }
 
 #[gpui::test]
+async fn test_project_groups_return_after_toggling_ai_off_and_on(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs, ["/root_b".as_ref()], cx).await;
+    let key_a = project_a.read_with(cx, |project, cx| project.project_group_key(cx));
+    let key_b = project_b.read_with(cx, |project, cx| project.project_group_key(cx));
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.open_sidebar(cx);
+        multi_workspace.test_add_workspace(project_b, window, cx);
+    });
+    cx.run_until_parked();
+    let keys = |cx: &mut VisualTestContext| {
+        multi_workspace.read_with(cx, |multi_workspace, _| {
+            multi_workspace.project_group_keys()
+        })
+    };
+    assert_eq!(keys(cx), vec![key_b.clone(), key_a.clone()]);
+
+    cx.update(|_window, cx| {
+        DisableAiSettings::override_global(DisableAiSettings { disable_ai: true }, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(keys(cx), Vec::<ProjectGroupKey>::new());
+    multi_workspace
+        .update(cx, |multi_workspace, cx| {
+            multi_workspace.flush_serialization(cx)
+        })
+        .await;
+    let saved_group_count = cx.update(|window, cx| {
+        crate::persistence::read_multi_workspace_state(window.window_handle().window_id(), cx)
+            .project_groups
+            .len()
+    });
+    assert_eq!(
+        saved_group_count, 2,
+        "groups should stay saved while AI is off"
+    );
+
+    cx.update(|_window, cx| {
+        DisableAiSettings::override_global(DisableAiSettings { disable_ai: false }, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(keys(cx), vec![key_b, key_a]);
+}
+
+#[gpui::test]
 async fn test_sidebar_disabled_when_disable_ai_is_enabled(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
