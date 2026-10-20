@@ -299,6 +299,21 @@ impl GitRepository for FakeGitRepository {
         .boxed()
     }
 
+    fn load_range_diff(
+        &self,
+        _base: String,
+        _target: String,
+        _cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<git::repository::CommitDiff>> {
+        async {
+            Ok(git::repository::CommitDiff {
+                files: Vec::new(),
+                is_shallow_boundary: false,
+            })
+        }
+        .boxed()
+    }
+
     fn set_index_text(
         &self,
         path: RepoPath,
