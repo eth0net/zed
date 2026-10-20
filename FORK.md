@@ -16,6 +16,7 @@ them, and is what gets built.
 | `project-panel-persist-collapse-state` | #56521      | closed, unmerged |
 | `project-panel-auto-reveal-ignored`    | —           | not yet proposed |
 | `sidebar-drag-reorder-projects`        | —           | not yet proposed |
+| `git-diff-any-target`                  | —           | not yet proposed |
 | `release-channel-fork`                 | —           | fork-only        |
 
 `release-channel-fork` adds the Fork release channel ("Zed Fork",
@@ -43,9 +44,11 @@ tests for the crates the branches touch (`workspace`, `sidebar`,
   - Window project lists are keyed by a window id macOS reuses.
   - Turning AI off clears every project group.
 - Git graph: show every ref on a commit, prefer the checked-out or local
-  branch for the chip, and add Checkout, Checkout detached and Compare with
-  HEAD to the context menu.
-- Remotes: a "Pull From" action, and the branch picker grouped by remote.
+  branch for the chip, and add Checkout and Checkout detached to the context
+  menu.
+- Remotes: a "Pull From" action, the branch picker grouped by remote, and
+  Push/Pull asking which remote only when there are several, with the
+  default remote preselected.
 - Reopen Closed Window.
 - Sidebar drag: accept drops on a group's threads, and scroll while dragging.
 - Upstream `bundle-mac -i` tries to build a DMG from an app it has already
