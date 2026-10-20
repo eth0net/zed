@@ -5,6 +5,7 @@ use crate::{
         self, CompareWithBranch, DeployBranchDiff, ProjectDiff, ReviewDiff,
         render_send_review_to_agent_button,
     },
+    range_diff_view::{self, WORKING_TREE_TARGET},
 };
 use agent_settings::AgentSettings;
 use anyhow::{Context as _, Result, anyhow};
@@ -788,6 +789,15 @@ impl Render for BranchDiffToolbar {
                 .is_some_and(|display_diff| display_diff.entity_id() == buffers.entity_id())
         });
         let view_for_picker = branch_diff.downgrade();
+        let target_picker = repository.clone().map(|repository| {
+            range_diff_view::range_picker(
+                range_diff_view::RangeSide::Target,
+                base_ref.clone(),
+                WORKING_TREE_TARGET.into(),
+                repository,
+                workspace.clone(),
+            )
+        });
 
         let is_multibuffer_empty = branch_diff
             .read(cx)
@@ -872,6 +882,7 @@ impl Render for BranchDiffToolbar {
                         Tooltip::text("Select Base Branch"),
                     ),
             )
+            .children(target_picker)
             .when(show_review_button, |this| {
                 let focus_handle = focus_handle.clone();
                 this.child(Divider::vertical()).child(

@@ -35,6 +35,7 @@ use git_ui::branch_diff::BranchDiffToolbar;
 use git_ui::commit_view::CommitViewToolbar;
 use git_ui::git_panel::GitPanel;
 use git_ui::project_diff::ProjectDiffToolbar;
+use git_ui::range_diff_view::RangeDiffToolbar;
 use git_ui::solo_diff_view::{SoloDiffGitToolbar, SoloDiffStyleToolbar};
 use git_ui::staged_diff::StagedDiffToolbar;
 use git_ui::unstaged_diff::UnstagedDiffToolbar;
@@ -1516,6 +1517,8 @@ fn initialize_pane(
             toolbar.add_item(solo_diff_git_toolbar, window, cx);
             let commit_view_toolbar = cx.new(|_| CommitViewToolbar::new());
             toolbar.add_item(commit_view_toolbar, window, cx);
+            let range_diff_toolbar = cx.new(|_| RangeDiffToolbar::new());
+            toolbar.add_item(range_diff_toolbar, window, cx);
             let agent_diff_toolbar = cx.new(AgentDiffToolbar::new);
             toolbar.add_item(agent_diff_toolbar, window, cx);
             let basedpyright_banner = cx.new(|cx| BasedPyrightBanner::new(workspace, cx));
@@ -4881,7 +4884,7 @@ mod tests {
         let initial_font_size =
             cx.update(|_, cx| ThemeSettings::get_global(cx).buffer_font_size(cx).as_f32());
 
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: mouse_position,
             delta: gpui::ScrollDelta::Pixels(point(px(0.), px(1.))),
             modifiers: event_modifiers,
@@ -4909,7 +4912,7 @@ mod tests {
             window.draw(cx).clear(cx);
         });
 
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: mouse_position,
             delta: gpui::ScrollDelta::Pixels(point(px(0.), px(1.))),
             modifiers: event_modifiers,
@@ -4928,7 +4931,7 @@ mod tests {
             window.draw(cx).clear(cx);
         });
 
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: mouse_position,
             delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-1.))),
             modifiers: event_modifiers,
@@ -4959,7 +4962,7 @@ mod tests {
             window.draw(cx).clear(cx);
         });
 
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: mouse_position,
             delta: gpui::ScrollDelta::Pixels(point(px(0.), px(1.))),
             modifiers: event_modifiers,

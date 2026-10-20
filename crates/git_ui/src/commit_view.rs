@@ -26,7 +26,7 @@ use markdown::{Markdown, MarkdownElement};
 use multi_buffer::PathKey;
 use project::{
     Project, ProjectPath, WorktreeId,
-    git_store::{CommitDiff, Repository, UnshallowState},
+    git_store::{CommitDiff, CommitFile, Repository, UnshallowState},
 };
 use settings::{DiffViewStyle, Settings};
 use std::{
@@ -336,145 +336,30 @@ impl CommitView {
 
             editor
         });
-        let commit_sha = Arc::<str>::from(commit.sha.as_ref());
+        let short_sha = commit
+            .sha
+            .get(0..git::SHORT_SHA_LENGTH)
+            .unwrap_or(&commit.sha)
+            .to_string();
 
         let repository_clone = repository.clone();
         let project_clone = project.clone();
 
         let load_diff_task = cx.spawn_in(window, async move |this, cx| {
-            let mut binary_buffer_ids: HashSet<language::BufferId> = HashSet::default();
-            let mut file_statuses: HashMap<language::BufferId, FileStatus> = HashMap::default();
-
-            for file in commit_diff.files {
-                let is_created = file.old_text.is_none();
-                let is_deleted = file.new_text.is_none();
-                let raw_new_text = file.new_text.unwrap_or_default();
-                let raw_old_text = file.old_text;
-
-                let is_binary = file.is_binary;
-
-                let new_text = if is_binary {
-                    "(binary file not shown)".to_string()
-                } else {
-                    raw_new_text
-                };
-                let old_text = if is_binary { None } else { raw_old_text };
-                let worktree_id = repository_clone
-                    .read_with(cx, |repository, cx| {
-                        worktree_id_for_repo_path(
-                            repository,
-                            project_clone.read(cx),
-                            &file.path,
-                            cx,
-                        )
-                    })
-                    .context("project has no worktrees")?;
-                let short_sha = commit_sha
-                    .get(0..git::SHORT_SHA_LENGTH)
-                    .unwrap_or(&commit_sha);
-                let file_name = file
-                    .path
-                    .file_name()
-                    .map(|name| name.to_string())
-                    .unwrap_or_else(|| file.path.display(PathStyle::local()).to_string());
-                let display_name = format!("{short_sha} - {file_name}");
-
-                let file = Arc::new(GitBlob {
-                    path: file.path.clone(),
-                    is_deleted,
-                    is_binary,
-                    worktree_id,
-                    display_name,
-                }) as Arc<dyn language::File>;
-
-                let buffer = build_buffer(new_text, file, &language_registry, cx).await?;
-                let buffer_id = cx.update(|_, cx| buffer.read(cx).remote_id())?;
-
-                let status_code = if is_created {
-                    StatusCode::Added
-                } else if is_deleted {
-                    StatusCode::Deleted
-                } else {
-                    StatusCode::Modified
-                };
-                file_statuses.insert(
-                    buffer_id,
-                    FileStatus::Tracked(TrackedStatus {
-                        index_status: status_code,
-                        worktree_status: StatusCode::Unmodified,
-                    }),
-                );
-
-                if is_binary {
-                    binary_buffer_ids.insert(buffer_id);
-                }
-
-                let buffer_diff = if is_binary {
-                    cx.update(|_, cx| {
-                        let snapshot = buffer.read(cx).snapshot();
-                        cx.new(|cx| {
-                            BufferDiff::new_unchanged(
-                                &snapshot,
-                                snapshot.language().cloned(),
-                                Some(language_registry.clone()),
-                                cx,
-                            )
-                        })
-                    })?
-                } else {
-                    build_buffer_diff(old_text, &buffer, &language_registry, cx).await?
-                };
-
-                let (excerpt_ranges, path) = cx.update(|_, cx| {
-                    let snapshot = buffer.read(cx).snapshot();
-                    let path = PathKey::with_sort_prefix(
-                        FILE_NAMESPACE_SORT_PREFIX,
-                        snapshot.file().unwrap().path().clone(),
-                    );
-                    let ranges = if is_binary {
-                        vec![language::Point::zero()..snapshot.max_point()]
-                    } else {
-                        let diff_snapshot = buffer_diff.read(cx).snapshot(cx);
-                        let mut hunks = diff_snapshot.hunks(&snapshot).peekable();
-                        if hunks.peek().is_none() {
-                            vec![language::Point::zero()..snapshot.max_point()]
-                        } else {
-                            hunks
-                                .map(|hunk| hunk.buffer_range.to_point(&snapshot))
-                                .collect::<Vec<_>>()
-                        }
-                    };
-                    (ranges, path)
-                })?;
-
-                // Batch the insertion of excerpts and yield between batches, to avoid blocking the main thread when a single file has many hunks.
-                const EXCERPT_BATCH_SIZE: usize = 10;
-                let total = excerpt_ranges.len();
-                let mut batch_end = 0;
-                while batch_end < total {
-                    let is_first_batch = batch_end == 0;
-                    batch_end = (batch_end + EXCERPT_BATCH_SIZE).min(total);
-                    let ranges = excerpt_ranges[..batch_end].to_vec();
-                    this.update_in(cx, |this, window, cx| {
-                        this.editor.update(cx, |editor, cx| {
-                            editor.update_excerpts_for_path(
-                                path.clone(),
-                                buffer.clone(),
-                                ranges,
-                                multibuffer_context_lines(cx),
-                                buffer_diff.clone(),
-                                cx,
-                            );
-                            if is_first_batch && editor.diff_view_style() == DiffViewStyle::Split {
-                                editor.split(window, cx);
-                            }
-                        });
-                    })?;
-                    if batch_end < total {
-                        yield_now().await;
-                    }
-                }
-            }
+            let editor = this.read_with(cx, |this, _| this.editor.downgrade())?;
+            let LoadedDiffFiles {
+                file_statuses,
+                binary_buffer_ids,
+            } = load_diff_files(
+                commit_diff.files,
+                &short_sha,
+                editor,
+                repository_clone,
+                project_clone,
+                language_registry,
+                cx,
+            )
+            .await?;
 
             this.update(cx, |this, cx| {
                 let commit_view = cx.weak_entity();
@@ -1109,6 +994,151 @@ impl language::File for GitBlob {
     fn can_open(&self) -> bool {
         !self.is_binary
     }
+}
+
+pub(crate) struct LoadedDiffFiles {
+    pub(crate) file_statuses: HashMap<language::BufferId, FileStatus>,
+    pub(crate) binary_buffer_ids: HashSet<language::BufferId>,
+}
+
+/// Adds each file's diff to `editor` as read-only buffers labelled `label - <file name>`.
+pub(crate) async fn load_diff_files(
+    files: Vec<CommitFile>,
+    label: &str,
+    editor: WeakEntity<SplittableEditor>,
+    repository: Entity<Repository>,
+    project: Entity<Project>,
+    language_registry: Arc<LanguageRegistry>,
+    cx: &mut AsyncWindowContext,
+) -> Result<LoadedDiffFiles> {
+    let mut binary_buffer_ids: HashSet<language::BufferId> = HashSet::default();
+    let mut file_statuses: HashMap<language::BufferId, FileStatus> = HashMap::default();
+
+    for file in files {
+        let is_created = file.old_text.is_none();
+        let is_deleted = file.new_text.is_none();
+        let raw_new_text = file.new_text.unwrap_or_default();
+        let raw_old_text = file.old_text;
+
+        let is_binary = file.is_binary;
+
+        let new_text = if is_binary {
+            "(binary file not shown)".to_string()
+        } else {
+            raw_new_text
+        };
+        let old_text = if is_binary { None } else { raw_old_text };
+        let worktree_id = repository
+            .read_with(cx, |repository, cx| {
+                worktree_id_for_repo_path(repository, project.read(cx), &file.path, cx)
+            })
+            .context("project has no worktrees")?;
+        let file_name = file
+            .path
+            .file_name()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| file.path.display(PathStyle::local()).to_string());
+        let display_name = format!("{label} - {file_name}");
+
+        let file = Arc::new(GitBlob {
+            path: file.path.clone(),
+            is_deleted,
+            is_binary,
+            worktree_id,
+            display_name,
+        }) as Arc<dyn language::File>;
+
+        let buffer = build_buffer(new_text, file, &language_registry, cx).await?;
+        let buffer_id = cx.update(|_, cx| buffer.read(cx).remote_id())?;
+
+        let status_code = if is_created {
+            StatusCode::Added
+        } else if is_deleted {
+            StatusCode::Deleted
+        } else {
+            StatusCode::Modified
+        };
+        file_statuses.insert(
+            buffer_id,
+            FileStatus::Tracked(TrackedStatus {
+                index_status: status_code,
+                worktree_status: StatusCode::Unmodified,
+            }),
+        );
+
+        if is_binary {
+            binary_buffer_ids.insert(buffer_id);
+        }
+
+        let buffer_diff = if is_binary {
+            cx.update(|_, cx| {
+                let snapshot = buffer.read(cx).snapshot();
+                cx.new(|cx| {
+                    BufferDiff::new_unchanged(
+                        &snapshot,
+                        snapshot.language().cloned(),
+                        Some(language_registry.clone()),
+                        cx,
+                    )
+                })
+            })?
+        } else {
+            build_buffer_diff(old_text, &buffer, &language_registry, cx).await?
+        };
+
+        let (excerpt_ranges, path) = cx.update(|_, cx| {
+            let snapshot = buffer.read(cx).snapshot();
+            let path = PathKey::with_sort_prefix(
+                FILE_NAMESPACE_SORT_PREFIX,
+                snapshot.file().unwrap().path().clone(),
+            );
+            let ranges = if is_binary {
+                vec![language::Point::zero()..snapshot.max_point()]
+            } else {
+                let diff_snapshot = buffer_diff.read(cx).snapshot(cx);
+                let mut hunks = diff_snapshot.hunks(&snapshot).peekable();
+                if hunks.peek().is_none() {
+                    vec![language::Point::zero()..snapshot.max_point()]
+                } else {
+                    hunks
+                        .map(|hunk| hunk.buffer_range.to_point(&snapshot))
+                        .collect::<Vec<_>>()
+                }
+            };
+            (ranges, path)
+        })?;
+
+        // Batch the insertion of excerpts and yield between batches, to avoid blocking the main thread when a single file has many hunks.
+        const EXCERPT_BATCH_SIZE: usize = 10;
+        let total = excerpt_ranges.len();
+        let mut batch_end = 0;
+        while batch_end < total {
+            let is_first_batch = batch_end == 0;
+            batch_end = (batch_end + EXCERPT_BATCH_SIZE).min(total);
+            let ranges = excerpt_ranges[..batch_end].to_vec();
+            editor.update_in(cx, |editor, window, cx| {
+                editor.update_excerpts_for_path(
+                    path.clone(),
+                    buffer.clone(),
+                    ranges,
+                    multibuffer_context_lines(cx),
+                    buffer_diff.clone(),
+                    cx,
+                );
+                if is_first_batch && editor.diff_view_style() == DiffViewStyle::Split {
+                    editor.split(window, cx);
+                }
+            })?;
+            if batch_end < total {
+                yield_now().await;
+            }
+        }
+    }
+
+    Ok(LoadedDiffFiles {
+        file_statuses,
+        binary_buffer_ids,
+    })
 }
 
 pub(crate) async fn build_buffer(
