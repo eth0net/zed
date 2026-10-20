@@ -941,16 +941,50 @@ fn sort_branch_entries(
             })
         })
         .unwrap_or(false);
+    // Remote branches are grouped by remote, leading with the remote of the
+    // selected branch or else the active branch, then `origin`.
+    let leading_remote: Option<String> = branch_selection_context.and_then(|context| {
+        context
+            .selected_branch
+            .as_ref()
+            .and_then(|selected_branch| {
+                matches.iter().find_map(|entry| {
+                    let branch = entry.as_branch()?;
+                    branch_matches_ref(branch, selected_branch)
+                        .then(|| branch.remote_name())
+                        .flatten()
+                        .map(str::to_owned)
+                })
+            })
+            .or_else(|| {
+                context
+                    .active_branch_remote_name
+                    .as_ref()
+                    .map(|name| name.to_string())
+            })
+    });
+    let remote_sort_key = |branch: &Branch| {
+        let remote_name = branch.remote_name()?;
+        Some((
+            leading_remote.as_deref() != Some(remote_name),
+            remote_name != "origin",
+            remote_name.to_owned(),
+        ))
+    };
 
     matches.sort_by_key(|entry| {
         let Some(branch) = entry.as_branch() else {
-            return (true, 4);
+            return (true, None, 4);
         };
 
         let priority = branch_selection_context
             .map(|context| context.priority(branch))
             .unwrap_or(0);
-        (branch.is_remote() != selected_branch_is_remote, priority)
+        (
+            branch.is_remote() != selected_branch_is_remote,
+            remote_sort_key(branch),
+            priority,
+        )
     });
 }
 
@@ -1956,7 +1990,14 @@ impl PickerDelegate for BranchListDelegate {
                 },
             );
 
-        let section_header = (self.branch_filter == BranchFilter::All)
+        let has_several_remotes = self
+            .matches
+            .iter()
+            .filter_map(|entry| entry.as_branch()?.remote_name())
+            .collect::<HashSet<_>>()
+            .len()
+            > 1;
+        let section_header = (self.branch_filter == BranchFilter::All || has_several_remotes)
             .then(|| entry.as_branch())
             .flatten()
             .and_then(|branch| {
@@ -1965,13 +2006,18 @@ impl PickerDelegate for BranchListDelegate {
                         .as_branch()
                         .is_none_or(|previous_branch| {
                             previous_branch.is_remote() != branch.is_remote()
+                                || (has_several_remotes
+                                    && previous_branch.remote_name() != branch.remote_name())
                         });
                 starts_section.then(|| {
-                    if branch.is_remote() {
-                        ("Remote Branches", ix != 0)
-                    } else {
-                        ("Local Branches", false)
-                    }
+                    let header: SharedString = match branch.remote_name() {
+                        Some(remote_name) if has_several_remotes => {
+                            format!("Remote Branches: {remote_name}").into()
+                        }
+                        Some(_) => "Remote Branches".into(),
+                        None => "Local Branches".into(),
+                    };
+                    (header, ix != 0)
                 })
             });
 
@@ -2316,6 +2362,30 @@ mod tests {
                     .iter()
                     .position(|name| *name == "fork/main"),
             "branches on the active branch's remote should be prioritized within their section"
+        );
+    }
+
+    #[test]
+    fn test_remote_branches_are_grouped_by_remote() {
+        let mut entries = [
+            create_test_branch("b", false, Some("mirror"), Some(1000)),
+            create_test_branch("a", false, Some("origin"), Some(900)),
+            create_test_branch("main", true, None, Some(800)),
+            create_test_branch("c", false, Some("mirror"), Some(700)),
+            create_test_branch("d", false, Some("origin"), Some(600)),
+        ]
+        .into_iter()
+        .map(|branch| Entry::Branch {
+            branch,
+            positions: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+
+        sort_branch_entries(&mut entries, None);
+
+        assert_eq!(
+            entries.iter().map(Entry::name).collect::<Vec<_>>(),
+            ["main", "origin/a", "origin/d", "mirror/b", "mirror/c"]
         );
     }
 
