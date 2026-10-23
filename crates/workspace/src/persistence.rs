@@ -4224,7 +4224,7 @@ mod tests {
         .await;
 
         let sessions = db
-            .last_session_workspace_locations("s", None, fs.as_ref())
+            .last_session_workspace_locations(&["s"], None, fs.as_ref())
             .await
             .unwrap();
         assert_eq!(sessions.len(), 1);
