@@ -20,6 +20,7 @@ them, and is what gets built.
 | `git-graph-refs`                       | —           | not yet proposed |
 | `git-remotes`                          | —           | not yet proposed |
 | `keep-projects-when-ai-off`            | —           | not yet proposed |
+| `restore-interrupted-session`          | —           | not yet proposed |
 | `release-channel-fork`                 | —           | fork-only        |
 
 `release-channel-fork` adds the Fork release channel ("Zed Fork",
@@ -42,9 +43,8 @@ tests for the crates the branches touch (`workspace`, `sidebar`,
 
 ## Next
 
-- Sidebar data loss:
-  - The session id is written before restore finishes.
-  - Window project lists are keyed by a window id macOS reuses.
+- Sidebar data loss: window project lists are keyed by a window id macOS
+  reuses.
 - Reopen Closed Window.
 - Sidebar drag: scroll while dragging.
 - Upstream `bundle-mac -i` tries to build a DMG from an app it has already
