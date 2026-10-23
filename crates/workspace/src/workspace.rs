@@ -10352,11 +10352,11 @@ pub async fn last_opened_workspace_location(
 
 pub async fn last_session_workspace_locations(
     db: &WorkspaceDb,
-    last_session_id: &str,
+    last_session_ids: &[impl AsRef<str>],
     last_session_window_stack: Option<Vec<WindowId>>,
     fs: &dyn fs::Fs,
 ) -> Option<Vec<SessionWorkspace>> {
-    db.last_session_workspace_locations(last_session_id, last_session_window_stack, fs)
+    db.last_session_workspace_locations(last_session_ids, last_session_window_stack, fs)
         .await
         .log_err()
 }

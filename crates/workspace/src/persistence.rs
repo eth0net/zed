@@ -2222,15 +2222,18 @@ impl WorkspaceDb {
     // according to that.
     pub async fn last_session_workspace_locations(
         &self,
-        last_session_id: &str,
+        last_session_ids: &[impl AsRef<str>],
         last_session_window_stack: Option<Vec<WindowId>>,
         fs: &dyn Fs,
     ) -> Result<Vec<SessionWorkspace>> {
         let mut workspaces = Vec::new();
 
-        for (workspace_id, paths, window_id, remote_connection_id) in
-            self.session_workspaces(last_session_id.to_owned())?
-        {
+        let mut session_workspaces = Vec::new();
+        for session_id in last_session_ids {
+            session_workspaces.extend(self.session_workspaces(session_id.as_ref().to_owned())?);
+        }
+
+        for (workspace_id, paths, window_id, remote_connection_id) in session_workspaces {
             let window_id = window_id.map(WindowId::from);
 
             if let Some(remote_connection_id) = remote_connection_id {
@@ -3846,7 +3849,7 @@ mod tests {
         ]));
 
         let locations = db
-            .last_session_workspace_locations("one-session", stack, fs.as_ref())
+            .last_session_workspace_locations(&["one-session"], stack, fs.as_ref())
             .await
             .unwrap();
         assert_eq!(
@@ -3986,7 +3989,7 @@ mod tests {
             .await;
 
         let sessions = db
-            .last_session_workspace_locations("s1", None, fs.as_ref())
+            .last_session_workspace_locations(&["s1"], None, fs.as_ref())
             .await
             .unwrap();
         assert_eq!(sessions.len(), 1);
@@ -4000,6 +4003,33 @@ mod tests {
                 .all(|workspace| workspace.workspace_id != WorkspaceId(1)),
             "scratch-only workspace must not appear in the recent-projects UI"
         );
+    }
+
+    #[gpui::test]
+    async fn test_last_session_workspace_locations_across_sessions(cx: &mut gpui::TestAppContext) {
+        let fs = fs::FakeFs::new(cx.executor());
+        let db = WorkspaceDb::open_test_db("test_last_session_workspace_locations_across_sessions")
+            .await;
+
+        for (id, session) in [(1, "restored"), (2, "interrupted"), (3, "older")] {
+            db.save_workspace(workspace_with(
+                id,
+                &[],
+                pane_with_items(&[100]),
+                Some(session),
+            ))
+            .await;
+        }
+
+        let mut workspace_ids = db
+            .last_session_workspace_locations(&["restored", "interrupted"], None, fs.as_ref())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.workspace_id)
+            .collect::<Vec<_>>();
+        workspace_ids.sort();
+        assert_eq!(workspace_ids, [WorkspaceId(1), WorkspaceId(2)]);
     }
 
     #[gpui::test]
@@ -4152,7 +4182,7 @@ mod tests {
         .await;
 
         let sessions = db
-            .last_session_workspace_locations("s", None, fs.as_ref())
+            .last_session_workspace_locations(&["s"], None, fs.as_ref())
             .await
             .unwrap();
         assert!(
@@ -4228,7 +4258,7 @@ mod tests {
         ]));
 
         let have = db
-            .last_session_workspace_locations("one-session", stack, fs.as_ref())
+            .last_session_workspace_locations(&["one-session"], stack, fs.as_ref())
             .await
             .unwrap();
         assert_eq!(have.len(), 4);
@@ -4661,7 +4691,7 @@ mod tests {
         }
 
         let locations = db
-            .last_session_workspace_locations("test-session", None, fs.as_ref())
+            .last_session_workspace_locations(&["test-session"], None, fs.as_ref())
             .await
             .unwrap();
 
@@ -5021,7 +5051,7 @@ mod tests {
         );
 
         let session_workspaces = db
-            .last_session_workspace_locations("remove-test-session", None, fs.as_ref())
+            .last_session_workspace_locations(&["remove-test-session"], None, fs.as_ref())
             .await
             .unwrap();
         let restored_ids: Vec<WorkspaceId> = session_workspaces
@@ -5126,7 +5156,7 @@ mod tests {
 
         // The removed workspace should NOT appear in session restoration.
         let locations = db
-            .last_session_workspace_locations(session_id, None, fs.as_ref())
+            .last_session_workspace_locations(&[session_id], None, fs.as_ref())
             .await
             .unwrap();
 
@@ -5232,7 +5262,7 @@ mod tests {
         );
 
         let session_workspaces = db
-            .last_session_workspace_locations("pending-removal-session", None, fs.as_ref())
+            .last_session_workspace_locations(&["pending-removal-session"], None, fs.as_ref())
             .await
             .unwrap();
         let restored_ids: Vec<WorkspaceId> = session_workspaces
@@ -5304,7 +5334,7 @@ mod tests {
         cx.run_until_parked();
 
         let mut restored_ids = db
-            .last_session_workspace_locations(&session_id, None, fs.as_ref())
+            .last_session_workspace_locations(&[&session_id], None, fs.as_ref())
             .await
             .unwrap()
             .into_iter()
@@ -5367,7 +5397,7 @@ mod tests {
         cx.run_until_parked();
 
         let restored_ids = db
-            .last_session_workspace_locations(&session_id, None, fs.as_ref())
+            .last_session_workspace_locations(&[&session_id], None, fs.as_ref())
             .await
             .unwrap()
             .into_iter()
@@ -5498,7 +5528,7 @@ mod tests {
             .await;
 
         let restored = db
-            .last_session_workspace_locations(&session_id, None, fs.as_ref())
+            .last_session_workspace_locations(&[&session_id], None, fs.as_ref())
             .await
             .unwrap();
         assert_eq!(
@@ -5559,7 +5589,7 @@ mod tests {
             PathList::default()
         );
         let restored = db
-            .last_session_workspace_locations(&session_id, None, fs.as_ref())
+            .last_session_workspace_locations(&[&session_id], None, fs.as_ref())
             .await
             .unwrap();
         assert_eq!(
@@ -6156,7 +6186,7 @@ mod tests {
             .unwrap();
         let db = cx.update(|_, cx| WorkspaceDb::global(cx));
         let session_workspaces = db
-            .last_session_workspace_locations(&session_id, None, fs.as_ref())
+            .last_session_workspace_locations(&[&session_id], None, fs.as_ref())
             .await
             .expect("should load session workspaces");
         assert!(

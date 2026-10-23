@@ -7738,7 +7738,7 @@ mod tests {
         // Verify all workspaces retained their session_ids.
         let db = cx.update(|cx| workspace::WorkspaceDb::global(cx));
         let locations =
-            workspace::last_session_workspace_locations(&db, &session_id, None, fs.as_ref())
+            workspace::last_session_workspace_locations(&db, &[&session_id], None, fs.as_ref())
                 .await
                 .expect("expected session workspace locations");
         assert_eq!(
@@ -7768,7 +7768,7 @@ mod tests {
 
         // --- Read back from DB and verify grouping ---
         let locations =
-            workspace::last_session_workspace_locations(&db, &session_id, None, fs.as_ref())
+            workspace::last_session_workspace_locations(&db, &[&session_id], None, fs.as_ref())
                 .await
                 .expect("expected session workspace locations");
 
@@ -8050,7 +8050,7 @@ mod tests {
         let database = cx.update(|cx| workspace::WorkspaceDb::global(cx));
         let locations = workspace::last_session_workspace_locations(
             &database,
-            &session_id,
+            &[&session_id],
             None,
             app_state.fs.as_ref(),
         )

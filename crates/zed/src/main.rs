@@ -965,8 +965,10 @@ fn main() {
             let db = workspace::WorkspaceDb::global(cx);
             let fs = app_state.fs.clone();
             let restore_finished = restore_finished.clone();
-            async move |_cx| {
+            let session = app_state.session.clone();
+            async move |cx| {
                 restore_finished.await;
+                cx.update(|cx| session.read(cx).restore_finished(cx)).await;
                 db.garbage_collect_workspaces(
                     fs.as_ref(),
                     &current_session_id,
@@ -1598,16 +1600,16 @@ pub(crate) async fn restorable_workspace_locations(
     });
 
     let session_handle = app_state.session.clone();
-    let (last_session_id, last_session_window_stack) = cx.update(|cx| {
+    let (last_session_ids, last_session_window_stack) = cx.update(|cx| {
         let session = session_handle.read(cx);
 
         (
-            session.last_session_id().map(|id| id.to_string()),
+            session.last_session_ids().to_vec(),
             session.last_session_window_stack(),
         )
     });
 
-    if last_session_id.is_none()
+    if last_session_ids.is_empty()
         && matches!(
             restore_behavior,
             workspace::RestoreOnStartupBehavior::LastSession
@@ -1630,12 +1632,12 @@ pub(crate) async fn restorable_workspace_locations(
                 })
         }
         workspace::RestoreOnStartupBehavior::LastSession => {
-            if let Some(last_session_id) = last_session_id {
+            if !last_session_ids.is_empty() {
                 let ordered = last_session_window_stack.is_some();
 
                 let mut locations = workspace::last_session_workspace_locations(
                     &db,
-                    &last_session_id,
+                    &last_session_ids,
                     last_session_window_stack,
                     app_state.fs.as_ref(),
                 )
