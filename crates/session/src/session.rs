@@ -4,16 +4,43 @@ use util::ResultExt;
 
 pub struct Session {
     session_id: String,
-    old_session_id: Option<String>,
+    old_session_ids: Vec<String>,
     old_window_ids: Option<Vec<WindowId>>,
 }
 
 const SESSION_ID_KEY: &str = "session_id";
 const SESSION_WINDOW_STACK_KEY: &str = "session_window_stack";
+// Sessions whose windows haven't all been restored yet, newest first. A launch
+// killed mid-restore leaves windows under both its own id and the ones it was
+// restoring from.
+const UNRESTORED_SESSION_IDS_KEY: &str = "unrestored_session_ids";
 
 impl Session {
     pub async fn new(session_id: String, db: KeyValueStore) -> Self {
         let old_session_id = db.read_kvp(SESSION_ID_KEY).ok().flatten();
+        let unrestored_session_ids = db
+            .read_kvp(UNRESTORED_SESSION_IDS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str::<Vec<String>>(&json).log_err())
+            .unwrap_or_default();
+
+        let mut old_session_ids = Vec::new();
+        for id in old_session_id.into_iter().chain(unrestored_session_ids) {
+            if !old_session_ids.contains(&id) {
+                old_session_ids.push(id);
+            }
+        }
+
+        // Record the old ids before replacing the current one, so a crash between
+        // the two writes still leaves them reachable.
+        if !old_session_ids.is_empty()
+            && let Some(json) = serde_json::to_string(&old_session_ids).log_err()
+        {
+            db.write_kvp(UNRESTORED_SESSION_IDS_KEY.to_string(), json)
+                .await
+                .log_err();
+        }
 
         db.write_kvp(SESSION_ID_KEY.to_string(), session_id.clone())
             .await
@@ -32,7 +59,7 @@ impl Session {
 
         Self {
             session_id,
-            old_session_id,
+            old_session_ids,
             old_window_ids,
         }
     }
@@ -41,7 +68,7 @@ impl Session {
     pub fn test() -> Self {
         Self {
             session_id: uuid::Uuid::new_v4().to_string(),
-            old_session_id: None,
+            old_session_ids: Vec::new(),
             old_window_ids: None,
         }
     }
@@ -50,7 +77,7 @@ impl Session {
     pub fn test_with_old_session(old_session_id: String) -> Self {
         Self {
             session_id: uuid::Uuid::new_v4().to_string(),
-            old_session_id: Some(old_session_id),
+            old_session_ids: vec![old_session_id],
             old_window_ids: None,
         }
     }
@@ -119,7 +146,23 @@ impl AppSession {
     }
 
     pub fn last_session_id(&self) -> Option<&str> {
-        self.session.old_session_id.as_deref()
+        self.session.old_session_ids.first().map(String::as_str)
+    }
+
+    /// The last session, then any earlier sessions whose restore was interrupted.
+    pub fn last_session_ids(&self) -> &[String] {
+        &self.session.old_session_ids
+    }
+
+    /// Call once the last session has been restored, so the next launch no longer
+    /// restores from the sessions before this one.
+    pub fn restore_finished(&self, cx: &App) -> Task<()> {
+        let db = KeyValueStore::global(cx);
+        cx.background_spawn(async move {
+            db.delete_kvp(UNRESTORED_SESSION_IDS_KEY.to_string())
+                .await
+                .log_err();
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -146,5 +189,32 @@ async fn store_window_stack(db: KeyValueStore, windows: &[u64]) {
         db.write_kvp(SESSION_WINDOW_STACK_KEY.to_string(), window_ids_json)
             .await
             .log_err();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    async fn test_interrupted_restore_keeps_earlier_sessions(cx: &mut TestAppContext) {
+        let app_db = db::AppDatabase::test_new();
+        let db = KeyValueStore::from_app_db(&app_db);
+        cx.update(|cx| cx.set_global(app_db));
+
+        let launch = |id: &str| Session::new(id.to_string(), db.clone());
+
+        assert!(launch("first").await.old_session_ids.is_empty());
+        // Killed before "first" was restored.
+        assert_eq!(launch("second").await.old_session_ids, ["first"]);
+        let third = launch("third").await;
+        assert_eq!(third.old_session_ids, ["second", "first"]);
+
+        let app_session = cx.new(|cx| AppSession::new(third, cx));
+        cx.update(|cx| app_session.read(cx).restore_finished(cx))
+            .await;
+
+        assert_eq!(launch("fourth").await.old_session_ids, ["third"]);
     }
 }
