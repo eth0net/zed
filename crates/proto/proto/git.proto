@@ -205,6 +205,19 @@ message GitCheckoutDetached {
   string commit = 3;
 }
 
+message GitTagDetails {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  string name = 3;
+}
+
+message GitTagDetailsResponse {
+  optional string tagger_name = 1;
+  optional string tagger_email = 2;
+  optional int64 timestamp = 3;
+  optional string message = 4;
+}
+
 message GitChangeBranch {
   uint64 project_id = 1;
   reserved 2;

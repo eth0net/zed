@@ -526,7 +526,9 @@ message Envelope {
     GetTerminalShell get_terminal_shell = 494;
     GetTerminalShellResponse get_terminal_shell_response = 495;
     LoadRangeDiff load_range_diff = 496;
-    GitCheckoutDetached git_checkout_detached = 497; // current max
+    GitCheckoutDetached git_checkout_detached = 497;
+    GitTagDetails git_tag_details = 498;
+    GitTagDetailsResponse git_tag_details_response = 499; // current max
   }
 
   reserved 87 to 88;

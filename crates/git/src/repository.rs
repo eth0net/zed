@@ -109,6 +109,15 @@ pub struct CommitData {
     pub message: SharedString,
 }
 
+/// The annotation of a tag. Lightweight tags have none of these fields.
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct TagDetails {
+    pub tagger_name: Option<SharedString>,
+    pub tagger_email: Option<SharedString>,
+    pub timestamp: Option<i64>,
+    pub message: Option<SharedString>,
+}
+
 #[derive(Debug)]
 pub struct InitialGraphCommitData {
     pub sha: Oid,
@@ -936,6 +945,7 @@ pub trait GitRepository: Send + Sync {
 
     fn change_branch(&self, name: String) -> BoxFuture<'_, Result<()>>;
     fn checkout_detached(&self, commit: String) -> BoxFuture<'_, Result<()>>;
+    fn tag_details(&self, name: String) -> BoxFuture<'_, Result<TagDetails>>;
     fn create_branch(&self, name: String, base_branch: Option<String>)
     -> BoxFuture<'_, Result<()>>;
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>>;
@@ -2446,6 +2456,39 @@ impl GitRepository for RealGitRepository {
                     .run(&["checkout", "--detach", &commit, "--"])
                     .await?;
                 anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn tag_details(&self, name: String) -> BoxFuture<'_, Result<TagDetails>> {
+        let git = self.git_binary();
+        self.executor
+            .spawn(async move {
+                let output = git
+                    .run_raw(&[
+                        "for-each-ref",
+                        "--format=%(objecttype)%00%(taggername)%00%(taggeremail:trim)%00%(taggerdate:unix)%00%(contents)",
+                        &format!("refs/tags/{name}"),
+                    ])
+                    .await?;
+                let mut fields = output.splitn(5, '\0');
+                let object_type = fields.next().unwrap_or_default();
+                anyhow::ensure!(!object_type.is_empty(), "no tag named {name:?}");
+                if object_type != "tag" {
+                    return Ok(TagDetails::default());
+                }
+                let non_empty = |field: Option<&str>| {
+                    field
+                        .map(str::trim)
+                        .filter(|field| !field.is_empty())
+                        .map(|field| SharedString::from(field.to_string()))
+                };
+                Ok(TagDetails {
+                    tagger_name: non_empty(fields.next()),
+                    tagger_email: non_empty(fields.next()),
+                    timestamp: fields.next().and_then(|field| field.trim().parse().ok()),
+                    message: non_empty(fields.next()),
+                })
             })
             .boxed()
     }
@@ -5036,6 +5079,56 @@ mod tests {
             branch_remote(&repository).await,
             (Some("mirror".into()), Some("mirror".into()))
         );
+    }
+
+    #[gpui::test]
+    async fn test_tag_details(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().expect("failed to create temporary repository");
+        git_init_repo(repo_dir.path());
+        fs::write(repo_dir.path().join("file.txt"), "one\n").expect("failed to write file");
+        git_command(repo_dir.path(), ["add", "file.txt"]);
+        git_command(repo_dir.path(), ["commit", "-m", "first"]);
+        git_command(
+            repo_dir.path(),
+            ["tag", "-a", "v1.0", "-m", "Release 1.0\n\nFirst release."],
+        );
+        git_command(repo_dir.path(), ["tag", "lightweight"]);
+
+        let repository = RealGitRepository::new(
+            &repo_dir.path().join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .expect("failed to open repository");
+
+        let annotated = repository
+            .tag_details("v1.0".into())
+            .await
+            .expect("failed to load annotated tag");
+        assert_eq!(
+            annotated.message.as_deref(),
+            Some("Release 1.0\n\nFirst release.")
+        );
+        assert!(annotated.tagger_name.is_some());
+        assert!(
+            annotated
+                .tagger_email
+                .as_deref()
+                .is_some_and(|email| !email.starts_with('<'))
+        );
+        assert!(annotated.timestamp.is_some());
+
+        let lightweight = repository
+            .tag_details("lightweight".into())
+            .await
+            .expect("failed to load lightweight tag");
+        assert_eq!(lightweight, TagDetails::default());
+
+        assert!(repository.tag_details("missing".into()).await.is_err());
     }
 
     #[gpui::test]
