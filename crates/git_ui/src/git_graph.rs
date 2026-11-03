@@ -1393,6 +1393,8 @@ struct GitGraphContextMenu {
 #[derive(Clone)]
 struct RefMenuEntry {
     ref_name: Option<SharedString>,
+    tag_name: Option<SharedString>,
+    sha: Oid,
     branch_to_check_out: Option<SharedString>,
     repository: Option<WeakEntity<Repository>>,
     git_tasks: Vec<(TaskSourceKind, ResolvedTask)>,
@@ -1416,6 +1418,17 @@ impl RefMenuEntry {
                     };
                     check_out_branch(branch_name.clone(), repository, window, cx);
                 },
+            );
+        }
+
+        if let Some(tag_name) = self.tag_name {
+            let sha = self.sha;
+            menu = menu.entry(
+                "View Tag",
+                None,
+                window.handler_for(git_graph, move |this, window, cx| {
+                    this.open_tag(tag_name.clone(), sha, window, cx);
+                }),
             );
         }
 
@@ -1959,6 +1972,10 @@ impl GitGraph {
     ) -> AnyElement {
         let tooltip_text = name.clone();
         let chip_id = SharedString::from(format!("git-graph-ref-chip-{commit_idx}-{name}"));
+        let tag_name = name
+            .starts_with("tag: ")
+            .then(|| Self::ref_name_from_decoration(&name))
+            .flatten();
 
         div()
             .id(chip_id)
@@ -1974,10 +1991,14 @@ impl GitGraph {
                                 .bg_color(background.blend(accent_color.opacity(0.25)))
                                 .border_color(accent_color.opacity(0.5))
                         } else {
-                            chip.icon(IconName::GitBranch)
-                                .icon_color(Color::Custom(accent_color))
-                                .bg_color(background.blend(accent_color.opacity(0.08)))
-                                .border_color(accent_color.opacity(0.25))
+                            chip.icon(if tag_name.is_some() {
+                                IconName::Bookmark
+                            } else {
+                                IconName::GitBranch
+                            })
+                            .icon_color(Color::Custom(accent_color))
+                            .bg_color(background.blend(accent_color.opacity(0.08)))
+                            .border_color(accent_color.opacity(0.25))
                         }
                     }),
             )
@@ -1997,6 +2018,17 @@ impl GitGraph {
                     }
                 }),
             )
+            .when_some(tag_name, |this, tag_name| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        let Some(commit) = this.graph_data.commits.get(commit_idx) else {
+                            return;
+                        };
+                        let sha = commit.data.sha;
+                        this.open_tag(tag_name.clone(), sha, window, cx);
+                    }))
+            })
             .tooltip(move |_window, cx| Tooltip::simple(tooltip_text.clone(), cx))
             .into_any_element()
     }
@@ -2639,6 +2671,27 @@ impl GitGraph {
         );
     }
 
+    fn open_tag(
+        &mut self,
+        tag_name: SharedString,
+        sha: Oid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repository) = self.get_repository(cx) else {
+            return;
+        };
+
+        CommitView::open_tag(
+            tag_name,
+            sha.to_string(),
+            repository.downgrade(),
+            self.workspace.clone(),
+            window,
+            cx,
+        );
+    }
+
     fn copy_commit_sha(&mut self, entry_index: usize, cx: &mut Context<Self>) {
         let Some(commit) = self.graph_data.commits.get(entry_index) else {
             return;
@@ -2779,9 +2832,10 @@ impl GitGraph {
     /// same entries can be rendered both as a standalone menu and as a submenu.
     fn ref_menu_entry(&self, sha: Oid, name: &SharedString, cx: &App) -> RefMenuEntry {
         let ref_name = Self::ref_name_from_decoration(name);
+        let is_tag = name.starts_with("tag: ");
+        let tag_name = ref_name.clone().filter(|_| is_tag);
         let repository_entity = self.get_repository(cx);
         let branch_to_check_out = repository_entity.as_ref().and_then(|repository| {
-            let is_tag = name.starts_with("tag: ");
             let ref_name = ref_name.as_ref().filter(|_| !is_tag)?;
             branch_to_check_out(ref_name, &repository.read(cx).snapshot().branch_list)
         });
@@ -2793,6 +2847,8 @@ impl GitGraph {
         );
         RefMenuEntry {
             ref_name,
+            tag_name,
+            sha,
             branch_to_check_out,
             repository,
             git_tasks,
@@ -7833,6 +7889,118 @@ mod tests {
 
         git_graph.read_with(&*cx, |graph, _| {
             assert_eq!(graph.selected_entry_idx, Some(1));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_view_tag_from_ref_context_menu(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            Path::new("/project"),
+            json!({ ".git": {}, "file.txt": "content" }),
+        )
+        .await;
+
+        let sha = Oid::from_bytes(&[1; 20]).expect("valid commit SHA");
+        fs.set_graph_commits(
+            Path::new("/project/.git"),
+            vec![Arc::new(InitialGraphCommitData {
+                sha,
+                parents: smallvec![],
+                ref_names: vec!["HEAD -> main".into(), "tag: v1.0".into()],
+            })],
+        );
+        fs.set_commit_data(
+            Path::new("/project/.git"),
+            [(
+                CommitData {
+                    sha,
+                    parents: smallvec![],
+                    author_name: "Author".into(),
+                    author_email: "author@example.com".into(),
+                    commit_timestamp: 1_700_000_000,
+                    subject: "Commit subject".into(),
+                    message: "Commit message".into(),
+                },
+                false,
+            )],
+        );
+        let details = git::repository::TagDetails {
+            tagger_name: Some("Tagger".into()),
+            tagger_email: Some("tagger@example.com".into()),
+            timestamp: Some(1_700_000_100),
+            message: Some("Release notes".into()),
+        };
+        fs.with_git_state(Path::new("/project/.git"), false, {
+            let details = details.clone();
+            |state| {
+                state.tag_details.insert("v1.0".into(), details);
+            }
+        })
+        .expect("fake repository should exist");
+
+        let project = Project::test(fs, [Path::new("/project")], cx).await;
+        cx.run_until_parked();
+        let repository = project.read_with(cx, |project, cx| {
+            project
+                .active_repository(cx)
+                .expect("should have a repository")
+        });
+        let (multi_workspace, cx) = cx.add_window_view(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = multi_workspace.read_with(&*cx, |multi, _| multi.workspace().clone());
+        let git_graph = cx.new_window_entity(|window, cx| {
+            GitGraph::new(
+                repository.read(cx).id,
+                project.read(cx).git_store().clone(),
+                workspace.downgrade(),
+                None,
+                window,
+                cx,
+            )
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(git_graph.clone()), None, true, window, cx);
+        });
+        cx.run_until_parked();
+
+        git_graph.update_in(cx, |git_graph, window, cx| {
+            git_graph.deploy_ref_context_menu(
+                point(px(20.), px(20.)),
+                0,
+                "tag: v1.0".into(),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let context_menu = git_graph.read_with(&*cx, |git_graph, _| {
+            git_graph
+                .context_menu
+                .as_ref()
+                .expect("context menu should be open")
+                .menu
+                .clone()
+        });
+        context_menu.update_in(cx, |context_menu, window, cx| {
+            context_menu.select_first(&Default::default(), window, cx);
+            context_menu.confirm(&menu::Confirm, window, cx);
+        });
+        cx.run_until_parked();
+
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        pane.read_with(cx, |pane, cx| {
+            let commit_view = pane
+                .active_item()
+                .and_then(|item| item.downcast::<CommitView>())
+                .expect("View Tag should open the tagged commit");
+            assert_eq!(
+                commit_view.read(cx).tag(),
+                Some(&(SharedString::from("v1.0"), details))
+            );
         });
     }
 

@@ -6,7 +6,7 @@ use editor::{
     SplittableEditor, hover_markdown_style, multibuffer_context_lines,
 };
 use futures_lite::future::yield_now;
-use git::repository::{CommitDetails, RepoPath};
+use git::repository::{CommitDetails, RepoPath, TagDetails};
 use git::status::{FileStatus, StatusCode, TrackedStatus};
 use git::{
     BuildCommitPermalinkParams, GitHostingProviderRegistry, GitRemote, ParsedGitRemote,
@@ -87,6 +87,7 @@ pub struct CommitView {
     remote: Option<GitRemote>,
     is_shallow_boundary: bool,
     file_filter: Option<RepoPath>,
+    tag: Option<(SharedString, TagDetails)>,
     _load_diff_task: Task<Result<()>>,
 }
 
@@ -196,6 +197,29 @@ impl CommitView {
             stash,
             file_filter,
             false,
+            None,
+            window,
+            cx,
+        )
+    }
+
+    /// Opens the commit a tag points at, with the tag's annotation above its message.
+    pub fn open_tag(
+        tag_name: SharedString,
+        commit_sha: String,
+        repo: WeakEntity<Repository>,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        Self::open_with_options(
+            commit_sha,
+            repo,
+            workspace,
+            None,
+            None,
+            false,
+            Some(tag_name),
             window,
             cx,
         )
@@ -208,6 +232,7 @@ impl CommitView {
         stash: Option<usize>,
         file_filter: Option<RepoPath>,
         ignore_shallow_boundary: bool,
+        tag_name: Option<SharedString>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -219,6 +244,12 @@ impl CommitView {
         let commit_details = repo
             .update(cx, |repo, cx| repo.show_commit(commit_sha.clone(), cx))
             .ok();
+        let tag_details = tag_name.and_then(|name| {
+            let details = repo
+                .update(cx, |repo, _| repo.tag_details(name.to_string()))
+                .ok()?;
+            Some((name, details))
+        });
 
         window
             .spawn(cx, async move |cx| {
@@ -227,6 +258,14 @@ impl CommitView {
                 let (commit_diff, commit_details) = futures::join!(commit_diff, commit_details);
                 let mut commit_diff = commit_diff.log_err()?;
                 let commit_details = commit_details.log_err()?;
+                let tag = match tag_details {
+                    Some((name, details)) => details
+                        .await
+                        .ok()
+                        .and_then(|details| details.log_err())
+                        .map(|details| (name, details)),
+                    None => None,
+                };
 
                 // Filter to specific file if requested
                 if let Some(ref filter_path) = file_filter {
@@ -250,6 +289,7 @@ impl CommitView {
                                 workspace_handle,
                                 stash,
                                 file_filter,
+                                tag,
                                 window,
                                 cx,
                             )
@@ -297,6 +337,7 @@ impl CommitView {
         workspace: WeakEntity<Workspace>,
         stash: Option<usize>,
         file_filter: Option<RepoPath>,
+        tag: Option<(SharedString, TagDetails)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -527,6 +568,7 @@ impl CommitView {
             remote,
             is_shallow_boundary,
             file_filter,
+            tag,
             _load_diff_task: load_diff_task,
         }
     }
@@ -600,6 +642,7 @@ impl CommitView {
                                                     stash,
                                                     file_filter,
                                                     false,
+                                                    None,
                                                     window,
                                                     cx,
                                                 )
@@ -632,6 +675,7 @@ impl CommitView {
                                     stash,
                                     file_filter.clone(),
                                     true,
+                                    None,
                                     window,
                                     cx,
                                 );
@@ -856,7 +900,61 @@ impl CommitView {
                         )
                     }),
             )
+            .children(self.render_tag(avatar_container_width))
             .children(self.render_commit_message(avatar_container_width, window, cx))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tag(&self) -> Option<&(SharedString, TagDetails)> {
+        self.tag.as_ref()
+    }
+
+    fn render_tag(&self, avatar_spacer: Pixels) -> Option<impl IntoElement> {
+        let (name, details) = self.tag.as_ref()?;
+        let tagged = match (&details.tagger_name, details.timestamp) {
+            (Some(tagger), Some(timestamp)) => {
+                let date = time::OffsetDateTime::from_unix_timestamp(timestamp)
+                    .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+                let local_offset =
+                    time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+                let date = time_format::format_localized_timestamp(
+                    date,
+                    time::OffsetDateTime::now_utc(),
+                    local_offset,
+                    time_format::TimestampFormat::MediumAbsolute,
+                );
+                format!("Tagged by {tagger} on {date}")
+            }
+            (Some(tagger), None) => format!("Tagged by {tagger}"),
+            _ => "Lightweight tag".to_string(),
+        };
+
+        Some(
+            h_flex()
+                .w_full()
+                .pr_2p5()
+                .child(h_flex().flex_none().w(avatar_spacer))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .child(Icon::new(IconName::Bookmark).size(IconSize::Small))
+                                .child(Label::new(name.clone()))
+                                .child(
+                                    Label::new(tagged)
+                                        .color(Color::Muted)
+                                        .size(LabelSize::Small),
+                                ),
+                        )
+                        .when_some(details.message.clone(), |this, message| {
+                            this.child(Label::new(message).size(LabelSize::Small))
+                        }),
+                ),
+        )
     }
 
     fn render_commit_message(
@@ -1375,6 +1473,7 @@ impl Item for CommitView {
                 remote: self.remote.clone(),
                 is_shallow_boundary: self.is_shallow_boundary,
                 file_filter: self.file_filter.clone(),
+                tag: self.tag.clone(),
                 _load_diff_task: Task::ready(Ok(())),
             }
         })))
