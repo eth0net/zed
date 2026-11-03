@@ -163,8 +163,7 @@ impl BranchDiff {
         let on_select = Arc::new({
             let repository = repository.clone();
             let workspace = workspace_handle.clone();
-            move |branch: git::repository::Branch, window: &mut Window, cx: &mut App| {
-                let base_ref: SharedString = branch.name().to_owned().into();
+            move |base_ref: SharedString, window: &mut Window, cx: &mut App| {
                 workspace
                     .update(cx, |workspace, cx| {
                         Self::deploy_branch_diff_with_base_ref(
@@ -832,10 +831,7 @@ impl Render for BranchDiffToolbar {
                         let repository_for_select = repository.clone();
                         let project = project.clone();
                         let on_select = Arc::new(
-                            move |branch: git::repository::Branch,
-                                  window: &mut Window,
-                                  cx: &mut App| {
-                                let base_ref: SharedString = branch.name().to_owned().into();
+                            move |base_ref: SharedString, window: &mut Window, cx: &mut App| {
                                 if uses_display_diff {
                                     let Some(repository) = repository_for_select.clone() else {
                                         return;
