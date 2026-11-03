@@ -514,8 +514,7 @@ pub(crate) fn range_picker(
             let repository_for_select = repository.clone();
             let workspace_for_select = workspace.clone();
             let on_select = Arc::new(
-                move |branch: git::repository::Branch, window: &mut Window, cx: &mut App| {
-                    let picked: SharedString = branch.name().to_owned().into();
+                move |picked: SharedString, window: &mut Window, cx: &mut App| {
                     let (base, target) = match side {
                         RangeSide::Base => (picked, target.clone()),
                         RangeSide::Target => (base.clone(), picked),

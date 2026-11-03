@@ -155,7 +155,8 @@ pub fn select_modal(
     list
 }
 
-pub type SelectBranchCallback = Arc<dyn Fn(Branch, &mut Window, &mut App)>;
+/// Called with the name of the picked branch, or with a revision typed into the query.
+pub type SelectBranchCallback = Arc<dyn Fn(SharedString, &mut Window, &mut App)>;
 
 pub fn create_embedded(
     workspace: WeakEntity<Workspace>,
@@ -561,6 +562,9 @@ enum Entry {
         name: String,
         url: SharedString,
     },
+    Revision {
+        revision: String,
+    },
 }
 
 impl Entry {
@@ -577,6 +581,7 @@ impl Entry {
             Entry::NewUrl { url, .. } => url.as_str(),
             Entry::NewBranch { name, .. } => name.as_str(),
             Entry::NewRemoteName { name, .. } => name.as_str(),
+            Entry::Revision { revision } => revision.as_str(),
         }
     }
 
@@ -1522,6 +1527,15 @@ impl PickerDelegate for BranchListDelegate {
                         matches.push(entry);
                     } else {
                         picker.delegate.state = PickerState::List;
+                        let revision = query.trim();
+                        if picker.delegate.is_select_only()
+                            && !revision.is_empty()
+                            && !all_branches.iter().any(|branch| branch.name() == revision)
+                        {
+                            matches.push(Entry::Revision {
+                                revision: revision.to_string(),
+                            });
+                        }
                     }
                     let delegate = &mut picker.delegate;
                     delegate.matches = matches;
@@ -1558,7 +1572,7 @@ impl PickerDelegate for BranchListDelegate {
                 if let BranchSelectionBehavior::Select { on_select, .. } =
                     &self.branch_selection_behavior
                 {
-                    on_select(branch.clone(), window, cx);
+                    on_select(branch.name().to_owned().into(), window, cx);
                     cx.emit(DismissEvent);
                     return;
                 }
@@ -1612,6 +1626,27 @@ impl PickerDelegate for BranchListDelegate {
             }
             Entry::NewRemoteName { name, url } => {
                 self.create_remote(name.clone(), url.to_string(), window, cx);
+            }
+            Entry::Revision { revision } => {
+                if let BranchSelectionBehavior::Select { on_select, .. } =
+                    &self.branch_selection_behavior
+                    && let Some(repo) = self.repo.clone()
+                {
+                    let on_select = on_select.clone();
+                    let revision = SharedString::from(revision.clone());
+                    cx.spawn_in(window, async move |_, cx| {
+                        repo.update(cx, |repo, _| repo.show(revision.to_string()))
+                            .await??;
+                        cx.update(|window, cx| on_select(revision, window, cx))?;
+                        anyhow::Ok(())
+                    })
+                    .detach_and_prompt_err(
+                        "Failed to find revision",
+                        window,
+                        cx,
+                        |_, _, _| None,
+                    );
+                }
             }
             Entry::NewBranch { name } => {
                 let from_branch = if secondary {
@@ -1687,6 +1722,7 @@ impl PickerDelegate for BranchListDelegate {
             Entry::NewUrl { .. } | Entry::NewBranch { .. } | Entry::NewRemoteName { .. } => {
                 IconName::Plus
             }
+            Entry::Revision { .. } => IconName::Hash,
             Entry::Branch { branch, .. } => {
                 if is_checked_branch {
                     IconName::Check
@@ -1715,6 +1751,10 @@ impl PickerDelegate for BranchListDelegate {
                 .single_line()
                 .truncate()
                 .into_any_element(),
+            Entry::Revision { revision } => Label::new(format!("Use Revision: \"{revision}\""))
+                .single_line()
+                .truncate()
+                .into_any_element(),
             Entry::Branch { branch, positions } => {
                 HighlightedLabel::new(branch.name().to_string(), positions.clone())
                     .single_line()
@@ -1729,6 +1769,7 @@ impl PickerDelegate for BranchListDelegate {
             entry,
             Entry::NewUrl { .. } | Entry::NewBranch { .. } | Entry::NewRemoteName { .. }
         );
+        let is_revision = matches!(entry, Entry::Revision { .. });
 
         let deleted_branch_icon = |entry_ix: usize, is_remote: bool| {
             let picker = picker.clone();
@@ -1834,6 +1875,9 @@ impl PickerDelegate for BranchListDelegate {
                                             "Based off the current branch".to_string()
                                         }
                                     }
+                                    Entry::Revision { .. } => {
+                                        "A commit SHA, tag or other ref".to_string()
+                                    }
                                     Entry::Branch { .. } => String::new(),
                                 };
 
@@ -1937,7 +1981,7 @@ impl PickerDelegate for BranchListDelegate {
                     ),
             )
             .when(
-                !self.is_select_only() && !is_new_items && !is_head_branch,
+                !self.is_select_only() && !is_new_items && !is_revision && !is_head_branch,
                 |this| {
                     let is_remote = entry.as_branch().is_some_and(|branch| branch.is_remote());
                     this.end_slot(deleted_branch_icon(ix, is_remote))
@@ -2161,7 +2205,7 @@ impl PickerDelegate for BranchListDelegate {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, sync::Mutex};
 
     use super::*;
     use git::repository::{
@@ -3136,7 +3180,7 @@ mod tests {
                         BranchListStyle::Modal,
                         rems(34.),
                         Some("main".into()),
-                        Arc::new(|_: Branch, _: &mut Window, _: &mut App| {}),
+                        Arc::new(|_: SharedString, _: &mut Window, _: &mut App| {}),
                         window,
                         cx,
                     )
@@ -3180,6 +3224,71 @@ mod tests {
                 );
             })
         });
+    }
+
+    #[gpui::test]
+    async fn test_select_picker_accepts_a_typed_revision(cx: &mut TestAppContext) {
+        const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+        init_test(cx);
+        let (project, repository) = init_fake_repository(cx).await;
+        cx.run_until_parked();
+        repository.update(cx, |repository, cx| {
+            repository.set_branch_list_for_test(create_test_branches(), cx);
+        });
+
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let selected = Arc::new(Mutex::new(None));
+        let select_list = window_handle
+            .update(cx, |_, window, cx| {
+                let selected = selected.clone();
+                cx.new(|cx| {
+                    BranchList::new_select(
+                        workspace.downgrade(),
+                        Some(repository.clone()),
+                        BranchListStyle::Modal,
+                        rems(34.),
+                        Some("main".into()),
+                        Arc::new(move |revision: SharedString, _: &mut Window, _: &mut App| {
+                            *selected.lock().unwrap() = Some(revision);
+                        }),
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap();
+
+        let mut ctx = VisualTestContext::from_window(window_handle.into(), cx);
+        let cx = &mut ctx;
+
+        select_list
+            .update_in(cx, |branch_list, window, cx| {
+                branch_list.picker.update(cx, |picker, cx| {
+                    picker
+                        .delegate
+                        .update_matches(format!(" {SHA} "), window, cx)
+                })
+            })
+            .await;
+        select_list.update_in(cx, |branch_list, window, cx| {
+            branch_list.picker.update(cx, |picker, cx| {
+                assert_eq!(
+                    picker.delegate.matches,
+                    [Entry::Revision {
+                        revision: SHA.to_string()
+                    }]
+                );
+                picker.delegate.confirm(false, window, cx);
+            })
+        });
+        cx.run_until_parked();
+
+        assert_eq!(selected.lock().unwrap().as_deref(), Some(SHA));
     }
 
     #[gpui::test]
