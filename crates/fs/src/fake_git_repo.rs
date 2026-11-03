@@ -15,7 +15,7 @@ use git::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
         CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
         GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
-        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, Worktree,
+        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, TagDetails, Worktree,
         commit_hash_search_query,
     },
     stash::GitStash,
@@ -83,6 +83,7 @@ pub struct FakeGitRepositoryState {
     pub stash_entries: GitStash,
     pub commit_template: Option<GitCommitTemplate>,
     pub blob_read_gate: Option<FakeBlobReadGate>,
+    pub tag_details: HashMap<String, TagDetails>,
 }
 
 impl FakeGitRepositoryState {
@@ -111,6 +112,7 @@ impl FakeGitRepositoryState {
             commit_history: Vec::new(),
             stash_entries: Default::default(),
             commit_template: None,
+            tag_details: HashMap::default(),
         }
     }
 }
@@ -1038,6 +1040,16 @@ impl GitRepository for FakeGitRepository {
         _create: bool,
     ) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
+    }
+
+    fn tag_details(&self, name: String) -> BoxFuture<'_, Result<TagDetails>> {
+        self.with_state_async(false, move |state| {
+            state
+                .tag_details
+                .get(&name)
+                .cloned()
+                .with_context(|| format!("no tag named {name:?}"))
+        })
     }
 
     fn checkout_detached(&self, commit: String) -> BoxFuture<'_, Result<()>> {

@@ -42,8 +42,8 @@ use git::{
         CreateWorktreeTarget, DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets,
         GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
         LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
-        SearchCommitArgs, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
-        is_binary_content,
+        SearchCommitArgs, TagDetails, UpstreamTrackingStatus, Worktree as GitWorktree,
+        delete_branch_flag, is_binary_content,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -1047,6 +1047,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_get_default_branch);
         client.add_entity_request_handler(Self::handle_change_branch);
         client.add_entity_request_handler(Self::handle_checkout_detached);
+        client.add_entity_request_handler(Self::handle_tag_details);
         client.add_entity_request_handler(Self::handle_create_branch);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
@@ -4366,6 +4367,29 @@ impl GitStore {
             .await??;
 
         Ok(proto::Ack {})
+    }
+
+    async fn handle_tag_details(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitTagDetails>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::GitTagDetailsResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let name = envelope.payload.name;
+
+        let details = repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.tag_details(name)
+            })
+            .await??;
+
+        Ok(proto::GitTagDetailsResponse {
+            tagger_name: details.tagger_name.map(Into::into),
+            tagger_email: details.tagger_email.map(Into::into),
+            timestamp: details.timestamp,
+            message: details.message.map(Into::into),
+        })
     }
 
     async fn handle_rename_branch(
@@ -9897,6 +9921,32 @@ impl Repository {
                 }
             },
         )
+    }
+
+    pub fn tag_details(&mut self, name: String) -> oneshot::Receiver<Result<TagDetails>> {
+        let id = self.id;
+        self.send_job("tag_details", None, move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.tag_details(name).await
+                }
+                RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                    let response = client
+                        .request(proto::GitTagDetails {
+                            project_id: project_id.0,
+                            repository_id: id.to_proto(),
+                            name,
+                        })
+                        .await?;
+                    Ok(TagDetails {
+                        tagger_name: response.tagger_name.map(Into::into),
+                        tagger_email: response.tagger_email.map(Into::into),
+                        timestamp: response.timestamp,
+                        message: response.message.map(Into::into),
+                    })
+                }
+            }
+        })
     }
 
     pub fn checkout_detached(&mut self, commit: String) -> oneshot::Receiver<Result<()>> {
