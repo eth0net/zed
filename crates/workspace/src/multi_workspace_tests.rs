@@ -81,10 +81,17 @@ async fn test_project_groups_return_after_toggling_ai_off_and_on(cx: &mut TestAp
             multi_workspace.flush_serialization(cx)
         })
         .await;
+    let session_id = multi_workspace.read_with(cx, |multi_workspace, cx| {
+        multi_workspace.workspace().read(cx).session_id()
+    });
     let saved_group_count = cx.update(|window, cx| {
-        crate::persistence::read_multi_workspace_state(window.window_handle().window_id(), cx)
-            .project_groups
-            .len()
+        crate::persistence::read_multi_workspace_state(
+            session_id.as_deref(),
+            window.window_handle().window_id(),
+            cx,
+        )
+        .project_groups
+        .len()
     });
     assert_eq!(
         saved_group_count, 2,
