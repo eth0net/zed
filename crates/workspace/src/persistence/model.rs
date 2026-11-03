@@ -117,6 +117,13 @@ pub struct MultiWorkspaceState {
     pub sidebar_state: Option<String>,
 }
 
+/// A window the user closed, kept so it can be reopened.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClosedWindow {
+    pub active_workspace_id: WorkspaceId,
+    pub state: MultiWorkspaceState,
+}
+
 /// The serialized state of a single MultiWorkspace window from a previous session:
 /// the active workspace to restore plus window-level state (project group keys,
 /// sidebar).

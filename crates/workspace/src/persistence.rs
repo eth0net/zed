@@ -19,7 +19,7 @@ use db::{
     sqlez::{connection::Connection, domain::Domain},
     sqlez_macros::sql,
 };
-use gpui::{Axis, Bounds, Task, WindowBounds, WindowId, point, size};
+use gpui::{AppContext as _, Axis, Bounds, Global, Task, WindowBounds, WindowId, point, size};
 use project::{
     ProjectGroupKey,
     bookmark_store::SerializedBookmark,
@@ -355,6 +355,80 @@ pub async fn garbage_collect_multi_workspace_states(
         }
     }
     Ok(())
+}
+
+const RECENTLY_CLOSED_WINDOWS_KEY: &str = "recently_closed_windows";
+const MAX_RECENTLY_CLOSED_WINDOWS: usize = 10;
+
+/// Newest first. Loaded on first use and written back whole on every change, so
+/// windows closing in quick succession can't overwrite each other's entries.
+struct RecentlyClosedWindows(Vec<model::ClosedWindow>);
+
+impl Global for RecentlyClosedWindows {}
+
+fn recently_closed_windows(cx: &mut App) -> &mut Vec<model::ClosedWindow> {
+    if !cx.has_global::<RecentlyClosedWindows>() {
+        let closed_windows = KeyValueStore::global(cx)
+            .read_kvp(RECENTLY_CLOSED_WINDOWS_KEY)
+            .log_err()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).log_err())
+            .unwrap_or_default();
+        cx.set_global(RecentlyClosedWindows(closed_windows));
+    }
+    &mut cx.global_mut::<RecentlyClosedWindows>().0
+}
+
+fn write_recently_closed_windows(cx: &mut App) -> Task<()> {
+    let Some(json) = serde_json::to_string(recently_closed_windows(cx)).log_err() else {
+        return Task::ready(());
+    };
+    let kvp = KeyValueStore::global(cx);
+    cx.background_spawn(async move {
+        kvp.write_kvp(RECENTLY_CLOSED_WINDOWS_KEY.to_string(), json)
+            .await
+            .log_err();
+    })
+}
+
+pub(crate) fn remember_closed_window(closed_window: model::ClosedWindow, cx: &mut App) -> Task<()> {
+    let closed_windows = recently_closed_windows(cx);
+    closed_windows.retain(|window| window.active_workspace_id != closed_window.active_workspace_id);
+    closed_windows.insert(0, closed_window);
+    closed_windows.truncate(MAX_RECENTLY_CLOSED_WINDOWS);
+    write_recently_closed_windows(cx)
+}
+
+/// Removes the most recently closed window from the list and returns what's needed to
+/// restore it. Windows whose workspace is open again, or no longer saved, are dropped.
+pub fn take_recently_closed_window(
+    open_workspace_ids: &HashSet<WorkspaceId>,
+    cx: &mut App,
+) -> Option<model::SerializedMultiWorkspace> {
+    let db = WorkspaceDb::global(cx);
+    let mut restorable = None;
+    let closed_windows = recently_closed_windows(cx);
+    while !closed_windows.is_empty() {
+        let closed_window = closed_windows.remove(0);
+        if open_workspace_ids.contains(&closed_window.active_workspace_id) {
+            continue;
+        }
+        if let Some(workspace) = db.workspace_for_id(closed_window.active_workspace_id) {
+            restorable = Some(model::SerializedMultiWorkspace {
+                active_workspace: model::SessionWorkspace {
+                    workspace_id: workspace.id,
+                    location: workspace.location,
+                    paths: workspace.paths,
+                    session_id: None,
+                    window_id: None,
+                },
+                state: closed_window.state,
+            });
+            break;
+        }
+    }
+    write_recently_closed_windows(cx).detach();
+    restorable
 }
 
 pub fn read_serialized_multi_workspaces(
@@ -2867,7 +2941,6 @@ mod tests {
     };
     use gpui::TaskExt;
 
-    use gpui::AppContext as _;
     use pretty_assertions::assert_eq;
     use project::Project;
     use remote::SshConnectionOptions;
@@ -4798,6 +4871,36 @@ mod tests {
         let window_30 = by_window.get(&WindowId::from(30u64)).unwrap();
         assert_eq!(window_30.len(), 1);
         assert!(window_30.contains(&WorkspaceId(5)));
+    }
+
+    #[gpui::test]
+    async fn test_recently_closed_windows(cx: &mut gpui::TestAppContext) {
+        use crate::persistence::model::{ClosedWindow, MultiWorkspaceState};
+
+        cx.update(|cx| cx.set_global(db::AppDatabase::test_new()));
+        let db = cx.update(|cx| WorkspaceDb::global(cx));
+        for id in [1, 2] {
+            db.save_workspace(workspace_with(id, &[], pane_with_items(&[100]), None))
+                .await;
+        }
+
+        // Workspace 3 has no saved row.
+        for id in [1, 2, 3] {
+            let closed_window = ClosedWindow {
+                active_workspace_id: WorkspaceId(id),
+                state: MultiWorkspaceState::default(),
+            };
+            cx.update(|cx| remember_closed_window(closed_window, cx))
+                .await;
+        }
+
+        let take = |open: &[i64]| {
+            let open = open.iter().copied().map(WorkspaceId).collect();
+            cx.update(|cx| take_recently_closed_window(&open, cx))
+                .map(|window| window.active_workspace.workspace_id)
+        };
+        assert_eq!(take(&[2]), Some(WorkspaceId(1)));
+        assert_eq!(take(&[]), None);
     }
 
     #[gpui::test]

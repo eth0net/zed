@@ -91,7 +91,7 @@ pub use persistence::{
         DockData, DockStructure, ItemId, MultiWorkspaceState, SerializedMultiWorkspace,
         SerializedProjectGroup, SerializedWorkspaceLocation, SessionWorkspace,
     },
-    read_serialized_multi_workspaces,
+    read_serialized_multi_workspaces, take_recently_closed_window,
 };
 use persistence::{SerializedWindowBounds, model::SerializedWorkspace};
 use postage::stream::Stream;
@@ -418,6 +418,8 @@ actions!(
         ToggleAllDocks,
         /// Closes the current window.
         CloseWindow,
+        /// Reopens the most recently closed window.
+        ReopenClosedWindow,
         /// Closes the current project.
         CloseProject,
         /// Opens the feedback dialog.

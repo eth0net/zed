@@ -23,7 +23,7 @@ use assets::Assets;
 
 use breadcrumbs::Breadcrumbs;
 use client::zed_urls;
-use collections::VecDeque;
+use collections::{HashSet, VecDeque};
 use debugger_ui::debugger_panel::DebugPanel;
 use editor::{Editor, MultiBuffer};
 use extension_host::ExtensionStore;
@@ -40,11 +40,11 @@ use git_ui::staged_diff::StagedDiffToolbar;
 use git_ui::unstaged_diff::UnstagedDiffToolbar;
 use git_ui_core::file_diff_view::FileDiffStyleToolbar;
 use gpui::{
-    Action, App, AppContext as _, AsyncWindowContext, ClipboardItem, Context, DismissEvent,
-    Element, Entity, FocusHandle, Focusable, Image, ImageFormat, KeyBinding, ParentElement,
-    PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Size, Task, TaskExt, TitlebarOptions,
-    UpdateGlobal, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions,
-    actions, image_cache, img, point, px, retain_all,
+    Action, App, AppContext as _, AsyncApp, AsyncWindowContext, ClipboardItem, Context,
+    DismissEvent, Element, Entity, FocusHandle, Focusable, Image, ImageFormat, KeyBinding,
+    ParentElement, PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Size, Task, TaskExt,
+    TitlebarOptions, UpdateGlobal, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind,
+    WindowOptions, actions, image_cache, img, point, px, retain_all,
 };
 use image_viewer::ImageInfo;
 use language::Capability;
@@ -67,8 +67,9 @@ use project::{
 };
 use project_panel::ProjectPanel;
 use quick_action_bar::QuickActionBar;
-use recent_projects::open_remote_project;
+use recent_projects::{RemoteSettings, open_remote_project};
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
+use remote::RemoteConnectionOptions;
 use rope::Rope;
 use search::project_search::ProjectSearchBar;
 use settings::{
@@ -103,7 +104,10 @@ use workspace::{
     WorkspaceSettings, create_and_open_local_file,
     notifications::simple_message_notification::MessageNotification, open_new,
 };
-use workspace::{CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace};
+use workspace::{
+    CloseProject, CloseWindow, ReopenClosedWindow, RestoreBanner, SerializedMultiWorkspace,
+    SerializedWorkspaceLocation, restore_multiworkspace, with_active_or_new_workspace,
+};
 use workspace::{Pane, notifications::DetachAndPromptErr};
 use zed_actions::{
     About, GetMerch, OpenAccountSettings, OpenBrowser, OpenDocs, OpenProjectTasks,
@@ -200,6 +204,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(quit);
 
     cx.on_action(|_: &RestoreBanner, cx| title_bar::restore_banner(cx));
+    cx.on_action(reopen_closed_window);
 
     cx.observe_flag::<PanicFeatureFlag, _>({
         let mut added = false;
@@ -425,6 +430,80 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
         use_display_p3: WorkspaceSettings::get_global(cx).use_display_p3,
         ..Default::default()
     }
+}
+
+/// Opens one saved window, local or remote, with its project groups and sidebar.
+pub async fn restore_window(
+    multi_workspace: SerializedMultiWorkspace,
+    app_state: Arc<AppState>,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    match &multi_workspace.active_workspace.location {
+        SerializedWorkspaceLocation::Local => {
+            restore_multiworkspace(multi_workspace, app_state.clone(), cx)
+                .await
+                .map(|_| ())
+        }
+        SerializedWorkspaceLocation::Remote(connection_options) => {
+            let mut connection_options = connection_options.clone();
+            if let RemoteConnectionOptions::Ssh(options) = &mut connection_options {
+                cx.update(|cx| {
+                    RemoteSettings::get_global(cx).fill_connection_options_from_settings(options)
+                });
+            }
+
+            let paths = multi_workspace
+                .active_workspace
+                .paths
+                .paths()
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            let window = open_remote_project(
+                connection_options,
+                paths,
+                app_state.clone(),
+                workspace::OpenOptions {
+                    // Each saved window must retain its own project roots,
+                    // even when some roots also appear in another window.
+                    workspace_matching: workspace::WorkspaceMatching::None,
+                    ..Default::default()
+                },
+                cx,
+            )
+            .await?;
+            workspace::apply_restored_multiworkspace_state(
+                window,
+                &multi_workspace.state,
+                app_state.fs.clone(),
+                cx,
+            )
+            .await;
+            Ok(())
+        }
+    }
+}
+
+fn reopen_closed_window(_: &ReopenClosedWindow, cx: &mut App) {
+    let app_state = AppState::global(cx);
+    let open_workspace_ids = cx
+        .windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<MultiWorkspace>())
+        .filter_map(|window| window.read(cx).ok())
+        .flat_map(|multi_workspace| {
+            multi_workspace
+                .workspaces()
+                .filter_map(|workspace| workspace.read(cx).database_id())
+                .collect::<Vec<_>>()
+        })
+        .collect::<HashSet<_>>();
+    let Some(multi_workspace) = workspace::take_recently_closed_window(&open_workspace_ids, cx)
+    else {
+        return;
+    };
+    cx.spawn(async move |cx| restore_window(multi_workspace, app_state, cx).await)
+        .detach_and_log_err(cx);
 }
 
 pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
@@ -7854,6 +7933,91 @@ mod tests {
                 assert_eq!(mw.workspaces().count(), 1);
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    async fn test_reopen_closed_window(cx: &mut TestAppContext) {
+        use workspace::{OpenMode, Workspace};
+
+        let app_state = init_test(cx);
+        cx.update(init);
+
+        let (dir1, dir2, dir3) = (path!("/dir1"), path!("/dir2"), path!("/dir3"));
+        let fake_fs = app_state.fs.as_fake();
+        for dir in [dir1, dir2, dir3] {
+            fake_fs.insert_tree(dir, json!({})).await;
+        }
+
+        let open = |dir: &'static str, cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                Workspace::new_local(
+                    vec![dir.into()],
+                    app_state.clone(),
+                    None,
+                    None,
+                    None,
+                    OpenMode::Activate,
+                    cx,
+                )
+            })
+        };
+        let closed = open(dir1, cx).await.expect("failed to open dir1").window;
+        closed
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.open_sidebar(cx);
+                multi_workspace.open_project(vec![dir2.into()], OpenMode::Activate, window, cx)
+            })
+            .unwrap()
+            .await
+            .expect("failed to add dir2");
+        let remaining = open(dir3, cx).await.expect("failed to open dir3").window;
+        cx.run_until_parked();
+
+        closed
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.close_window(&CloseWindow, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let windows = |cx: &mut TestAppContext| {
+            cx.read(|cx| {
+                cx.windows()
+                    .into_iter()
+                    .filter_map(|window| window.downcast::<MultiWorkspace>())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(windows(cx), [remaining]);
+
+        cx.dispatch_action(remaining.into(), ReopenClosedWindow);
+        cx.run_until_parked();
+
+        let reopened = windows(cx)
+            .into_iter()
+            .find(|window| *window != remaining)
+            .expect("the closed window should be reopened");
+        reopened
+            .read_with(cx, |multi_workspace, cx| {
+                assert_eq!(
+                    multi_workspace.workspace().read(cx).root_paths(cx),
+                    [Arc::from(Path::new(dir2))],
+                    "the window's active project should be reopened"
+                );
+                let mut group_paths = multi_workspace
+                    .project_group_keys()
+                    .into_iter()
+                    .flat_map(|key| key.path_list().paths().to_vec())
+                    .collect::<Vec<_>>();
+                group_paths.sort();
+                assert_eq!(group_paths, [PathBuf::from(dir1), PathBuf::from(dir2)]);
+                assert!(multi_workspace.sidebar_open());
+            })
+            .unwrap();
+
+        cx.dispatch_action(remaining.into(), ReopenClosedWindow);
+        cx.run_until_parked();
+        assert_eq!(windows(cx).len(), 2, "nothing else was closed");
     }
 
     #[gpui::test]

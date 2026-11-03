@@ -147,6 +147,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 ),
                 MenuItem::action("Close Project", workspace::CloseProject),
                 MenuItem::action("Close Window", workspace::CloseWindow),
+                MenuItem::action("Reopen Closed Window", workspace::ReopenClosedWindow),
             ],
         },
         Menu {
