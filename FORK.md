@@ -21,7 +21,12 @@ them, and is what gets built.
 | `git-remotes`                          | —           | not yet proposed |
 | `keep-projects-when-ai-off`            | —           | not yet proposed |
 | `restore-interrupted-session`          | —           | not yet proposed |
+| `stable-window-state-key`              | —           | not yet proposed |
+| `git-graph-open-tags`                  | —           | not yet proposed |
 | `release-channel-fork`                 | —           | fork-only        |
+
+`stable-window-state-key` builds on `restore-interrupted-session`, and
+`git-graph-open-tags` on `git-graph-refs`; each goes up after the one below it.
 
 `release-channel-fork` adds the Fork release channel ("Zed Fork",
 `dev.zed.Zed-Fork`, its own database, no auto-update) and the build scripts.
@@ -43,8 +48,6 @@ tests for the crates the branches touch (`workspace`, `sidebar`,
 
 ## Next
 
-- Sidebar data loss: window project lists are keyed by a window id macOS
-  reuses.
 - Reopen Closed Window.
 - Sidebar drag: scroll while dragging.
 - Upstream `bundle-mac -i` tries to build a DMG from an app it has already
