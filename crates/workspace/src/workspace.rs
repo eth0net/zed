@@ -88,7 +88,7 @@ pub use pane_group::{
     SplitDirection,
 };
 pub use persistence::{
-    RecentWorkspace, WorkspaceDb, delete_unloaded_items,
+    RecentWorkspace, WorkspaceDb, delete_unloaded_items, garbage_collect_multi_workspace_states,
     model::{
         DockData, DockStructure, ItemId, MultiWorkspaceState, SerializedMultiWorkspace,
         SerializedProjectGroup, SerializedWorkspaceLocation, SessionWorkspace,
@@ -10600,10 +10600,14 @@ pub async fn apply_restored_multiworkspace_state(
                 if let Some(sidebar) = multi_workspace.sidebar() {
                     sidebar.restore_serialized_state(sidebar_state, window, cx);
                 }
-                multi_workspace.serialize(cx);
             })
             .ok();
     }
+
+    // Saves the state under this session's key before the previous one is collected.
+    window_handle
+        .update(cx, |multi_workspace, _, cx| multi_workspace.serialize(cx))
+        .ok();
 }
 
 fn restore_native_window_state(

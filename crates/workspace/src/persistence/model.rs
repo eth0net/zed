@@ -59,6 +59,7 @@ pub struct SessionWorkspace {
     pub workspace_id: WorkspaceId,
     pub location: SerializedWorkspaceLocation,
     pub paths: PathList,
+    pub session_id: Option<String>,
     pub window_id: Option<WindowId>,
 }
 
