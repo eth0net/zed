@@ -966,6 +966,7 @@ fn main() {
             let fs = app_state.fs.clone();
             let restore_finished = restore_finished.clone();
             let session = app_state.session.clone();
+            let kvp = KeyValueStore::global(cx);
             async move |cx| {
                 restore_finished.await;
                 cx.update(|cx| session.read(cx).restore_finished(cx)).await;
@@ -973,6 +974,17 @@ fn main() {
                     fs.as_ref(),
                     &current_session_id,
                     last_session_id.as_deref(),
+                )
+                .await?;
+                workspace::garbage_collect_multi_workspace_states(
+                    &kvp,
+                    &[
+                        Some(current_session_id.as_str()),
+                        last_session_id.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>(),
                 )
                 .await
             }
@@ -1627,6 +1639,7 @@ pub(crate) async fn restorable_workspace_locations(
                         workspace_id,
                         location,
                         paths,
+                        session_id: None,
                         window_id: None,
                     }]
                 })

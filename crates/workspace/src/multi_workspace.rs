@@ -1462,10 +1462,19 @@ impl MultiWorkspace {
             sidebar_open: self.sidebar_open,
             sidebar_state: self.sidebar.as_ref().and_then(|s| s.serialized_state(cx)),
         };
+        let session_id = self
+            .workspace()
+            .read(cx)
+            .app_state()
+            .session
+            .read(cx)
+            .id()
+            .to_owned();
         let window_id = self.window_id;
         let kvp = db::kvp::KeyValueStore::global(cx);
         async move {
-            crate::persistence::write_multi_workspace_state(&kvp, window_id, state).await;
+            crate::persistence::write_multi_workspace_state(&kvp, &session_id, window_id, state)
+                .await;
         }
     }
 
