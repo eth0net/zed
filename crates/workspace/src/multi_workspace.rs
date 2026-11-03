@@ -29,7 +29,7 @@ use crate::open_remote_project_with_existing_connection;
 use crate::{
     CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, OpenMode,
     Panel, Workspace, WorkspaceId, client_side_decorations,
-    persistence::model::MultiWorkspaceState,
+    persistence::model::{ClosedWindow, MultiWorkspaceState},
 };
 
 actions!(
@@ -574,7 +574,14 @@ impl MultiWorkspace {
             crate::flush_windows_serialization(&[window_handle], cx).await;
 
             window_handle
-                .update(cx, |_, window, _cx| {
+                .update(cx, |this, window, cx| {
+                    if let Some(active_workspace_id) = this.workspace().read(cx).database_id() {
+                        let closed_window = ClosedWindow {
+                            active_workspace_id,
+                            state: this.serialized_state(cx),
+                        };
+                        crate::persistence::remember_closed_window(closed_window, cx).detach();
+                    }
                     window.remove_window();
                 })
                 .context("removing the closed window")?;
@@ -1526,8 +1533,8 @@ impl MultiWorkspace {
         }));
     }
 
-    fn serialize_now(&mut self, cx: &mut Context<Self>) -> impl Future<Output = ()> + use<> {
-        let state = MultiWorkspaceState {
+    fn serialized_state(&self, cx: &App) -> MultiWorkspaceState {
+        MultiWorkspaceState {
             active_workspace_id: self.workspace().read(cx).database_id(),
             project_groups: self
                 .project_groups
@@ -1542,7 +1549,11 @@ impl MultiWorkspace {
                 .collect::<Vec<_>>(),
             sidebar_open: self.sidebar_open,
             sidebar_state: self.sidebar.as_ref().and_then(|s| s.serialized_state(cx)),
-        };
+        }
+    }
+
+    fn serialize_now(&mut self, cx: &mut Context<Self>) -> impl Future<Output = ()> + use<> {
+        let state = self.serialized_state(cx);
         let session_id = self
             .workspace()
             .read(cx)
