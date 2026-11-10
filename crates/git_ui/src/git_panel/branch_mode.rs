@@ -284,9 +284,8 @@ impl GitPanel {
     fn on_base_picked(
         panel: WeakEntity<GitPanel>,
         request: ShowBranchChangesRequest,
-    ) -> impl Fn(Branch, &mut Window, &mut App) + 'static {
-        move |branch, window, cx| {
-            let base_ref: SharedString = branch.name().to_owned().into();
+    ) -> impl Fn(SharedString, &mut Window, &mut App) + 'static {
+        move |base_ref, window, cx| {
             panel
                 .update(cx, |panel, cx| {
                     panel.show_branch_changes_since(base_ref, window, cx);
@@ -788,9 +787,9 @@ impl GitPanel {
                     from_empty_state: false,
                 },
             );
-            move |branch: Branch, window: &mut Window, cx: &mut App| {
+            move |base_ref: SharedString, window: &mut Window, cx: &mut App| {
                 picked.store(true, Ordering::Relaxed);
-                show_branch_changes_since(branch, window, cx);
+                show_branch_changes_since(base_ref, window, cx);
             }
         });
         let branch_list = cx.new(|cx| {
