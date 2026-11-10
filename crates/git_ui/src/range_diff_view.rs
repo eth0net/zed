@@ -1,5 +1,5 @@
 use anyhow::Context as _;
-use collections::HashMap;
+use collections::{HashMap, HashSet};
 use editor::{
     Addon, Editor, EditorEvent, EditorSettings, HiddenDiffHunkRenderer, MultiBuffer,
     SplittableEditor,
@@ -31,7 +31,7 @@ use workspace::{
 
 use crate::branch_diff::BranchDiff;
 use crate::branch_picker;
-use crate::commit_view::{LoadedDiffFiles, load_diff_files};
+use crate::commit_view::append_diff_file;
 
 /// A read-only diff of the changes on `target` since it diverged from `base`,
 /// without checking `target` out.
@@ -255,25 +255,32 @@ impl RangeDiffView {
         self._load_diff_task = cx.spawn_in(window, async move |this, cx| {
             let result = async {
                 let range_diff = range_diff.await?;
-                load_diff_files(
-                    range_diff.files,
-                    &target,
-                    editor.clone(),
-                    repository,
-                    project,
-                    language_registry,
-                    cx,
-                )
-                .await
+                let mut file_statuses = HashMap::default();
+                let mut binary_buffer_ids = HashSet::default();
+                for file in range_diff.files {
+                    let is_binary = file.is_binary;
+                    let (buffer_id, file_status) = append_diff_file(
+                        file,
+                        &target,
+                        &editor,
+                        &repository,
+                        &project,
+                        &language_registry,
+                        cx,
+                    )
+                    .await?;
+                    file_statuses.insert(buffer_id, file_status);
+                    if is_binary {
+                        binary_buffer_ids.insert(buffer_id);
+                    }
+                }
+                anyhow::Ok((file_statuses, binary_buffer_ids))
             }
             .await;
 
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(LoadedDiffFiles {
-                        file_statuses,
-                        binary_buffer_ids,
-                    }) => {
+                    Ok((file_statuses, binary_buffer_ids)) => {
                         this.editor.update(cx, |editor, cx| {
                             editor.rhs_editor().update(cx, |editor, cx| {
                                 editor.register_addon(RangeDiffAddon { file_statuses });
@@ -597,7 +604,7 @@ impl Render for RangeDiffToolbar {
                         workspace
                             .update(cx, |workspace, cx| {
                                 BranchDiff::deploy_branch_diff_with_base_ref(
-                                    workspace, project, repository, base, None, window, cx,
+                                    workspace, project, repository, base, None, None, window, cx,
                                 );
                             })
                             .log_err();
