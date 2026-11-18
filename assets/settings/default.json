@@ -761,6 +761,8 @@
     "breakpoints": true,
     // Whether to show fold buttons in the gutter.
     "folds": true,
+    // Whether to show code coverage from the reports listed in `coverage.reports`.
+    "coverage": true,
     // Minimum number of characters to reserve space for in the gutter.
     "min_line_number_digits": 4,
     // The width of the git diff hunk indicators in the gutter.
@@ -1964,6 +1966,16 @@
   // 3. Don't load direnv configuration at all.
   //      "load_direnv": "disabled"
   "load_direnv": "direct",
+  // Code coverage reports to show in the gutter, as lcov or Cobertura XML. Paths are
+  // relative to each project root, and the reports are reloaded when they change.
+  "coverage": {
+    "reports": [
+      "lcov.info",
+      "coverage/lcov.info",
+      "coverage.xml",
+      "coverage/cobertura-coverage.xml"
+    ]
+  },
   "edit_predictions": {
     // Whether to show the edit prediction button in the status bar.
     "button": true,

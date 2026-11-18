@@ -5,6 +5,7 @@ pub mod buffer_store;
 pub mod color_extractor;
 pub mod connection_manager;
 pub mod context_server_store;
+pub mod coverage_store;
 pub mod debounced_delay;
 pub mod debugger;
 pub mod git_store;
@@ -38,6 +39,7 @@ use itertools::{Either, Itertools};
 
 use crate::{
     bookmark_store::BookmarkStore,
+    coverage_store::CoverageStore,
     git_store::GitStore,
     lsp_store::{SymbolLocation, log_store::LogKind},
     project_search::SearchResultsHandle,
@@ -231,6 +233,7 @@ pub struct Project {
     agent_server_store: Entity<AgentServerStore>,
 
     bookmark_store: Entity<BookmarkStore>,
+    coverage_store: Option<Entity<CoverageStore>>,
     breakpoint_store: Entity<BreakpointStore>,
     collab_client: Arc<client::Client>,
     join_project_response_message_id: u32,
@@ -1360,6 +1363,9 @@ impl Project {
             let bookmark_store =
                 cx.new(|cx| BookmarkStore::new(worktree_store.clone(), buffer_store.clone(), cx));
 
+            let coverage_store =
+                Some(cx.new(|cx| CoverageStore::new(fs.clone(), worktree_store.clone(), cx)));
+
             let breakpoint_store =
                 cx.new(|_| BreakpointStore::local(worktree_store.clone(), buffer_store.clone()));
 
@@ -1480,6 +1486,7 @@ impl Project {
                 fs,
                 remote_client: None,
                 bookmark_store,
+                coverage_store,
                 breakpoint_store,
                 dap_store,
                 agent_server_store,
@@ -1692,6 +1699,7 @@ impl Project {
                 lsp_store,
                 context_server_store,
                 bookmark_store,
+                coverage_store: None,
                 breakpoint_store,
                 dap_store,
                 join_project_response_message_id: 0,
@@ -2016,6 +2024,7 @@ impl Project {
                     replica_id,
                 },
                 bookmark_store: bookmark_store.clone(),
+                coverage_store: None,
                 breakpoint_store: breakpoint_store.clone(),
                 dap_store: dap_store.clone(),
                 git_store: git_store.clone(),
@@ -2300,6 +2309,11 @@ impl Project {
     #[inline]
     pub fn bookmark_store(&self) -> Entity<BookmarkStore> {
         self.bookmark_store.clone()
+    }
+
+    /// Coverage is only read from local worktrees.
+    pub fn coverage_store(&self) -> Option<Entity<CoverageStore>> {
+        self.coverage_store.clone()
     }
 
     #[inline]

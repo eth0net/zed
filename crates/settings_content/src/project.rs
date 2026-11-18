@@ -85,12 +85,26 @@ pub struct ProjectSettingsContent {
     ///
     /// Default: false
     pub disable_ai: Option<SaturatingBool>,
+
+    /// Where to find code coverage reports for the gutter.
+    pub coverage: Option<CoverageSettingsContent>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, MergeFrom)]
+pub struct CoverageSettingsContent {
+    /// Paths of lcov or Cobertura XML reports, relative to each project root. A file
+    /// covered by more than one report takes its coverage from the newest.
+    ///
+    /// Default: ["lcov.info", "coverage/lcov.info", "coverage.xml", "coverage/cobertura-coverage.xml"]
+    pub reports: Option<Vec<String>>,
 }
 
 crate::fallible_options::flattened_deserialize!(ProjectSettingsContent {
     sections: { all_languages, worktree },
     options: {
         terminal, context_server_timeout, load_direnv, git_hosting_providers, disable_ai,
+        coverage,
     },
     defaults: { lsp, dap, context_servers },
 });
