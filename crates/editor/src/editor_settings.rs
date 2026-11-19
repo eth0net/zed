@@ -169,6 +169,7 @@ pub struct Gutter {
     pub breakpoints: bool,
     pub bookmarks: bool,
     pub folds: bool,
+    pub coverage: bool,
     pub git_gutter_width: settings::GitGutterWidth,
 }
 
@@ -295,6 +296,7 @@ impl Settings for EditorSettings {
                 bookmarks: gutter.bookmarks.unwrap(),
                 breakpoints: gutter.breakpoints.unwrap(),
                 folds: gutter.folds.unwrap(),
+                coverage: gutter.coverage.unwrap(),
                 git_gutter_width: gutter.git_gutter_width.unwrap(),
             },
             scroll_beyond_last_line: editor.scroll_beyond_last_line.unwrap(),

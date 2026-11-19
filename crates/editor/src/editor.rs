@@ -1046,6 +1046,7 @@ pub struct Editor {
     show_code_actions: Option<bool>,
     show_runnables: Option<bool>,
     show_bookmarks: Option<bool>,
+    show_coverage: Option<bool>,
     show_breakpoints: Option<bool>,
     show_diff_review_button: bool,
     show_wrap_guides: Option<bool>,
@@ -2436,6 +2437,7 @@ impl Editor {
             show_code_actions: None,
             show_runnables: None,
             show_bookmarks: None,
+            show_coverage: None,
             show_breakpoints: None,
             show_diff_review_button: false,
             show_wrap_guides: None,
@@ -2643,6 +2645,16 @@ impl Editor {
                 .push(cx.observe(breakpoints, |_, _, cx| {
                     cx.notify();
                 }));
+        }
+        if editor.mode.is_full()
+            && let Some(coverage_store) = editor
+                .project
+                .as_ref()
+                .and_then(|project| project.read(cx).coverage_store())
+        {
+            editor
+                ._subscriptions
+                .push(cx.observe(&coverage_store, |_, _, cx| cx.notify()));
         }
         editor._subscriptions.extend(project_subscriptions);
 

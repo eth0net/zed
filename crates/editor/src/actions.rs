@@ -904,6 +904,8 @@ actions!(
         BlamePreviousRevision,
         /// Toggles the diagnostics panel.
         ToggleDiagnostics,
+        /// Toggles code coverage markers in the gutter.
+        ToggleCoverage,
         /// Toggles indent guides display.
         ToggleIndentGuides,
         /// Toggles inlay hints display.

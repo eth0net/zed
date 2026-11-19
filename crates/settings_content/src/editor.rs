@@ -549,6 +549,10 @@ pub struct GutterContent {
     ///
     /// Default: true
     pub folds: Option<bool>,
+    /// Whether to show code coverage from the project's coverage reports in the gutter.
+    ///
+    /// Default: true
+    pub coverage: Option<bool>,
     /// The width of the git diff hunk indicators in the gutter.
     /// Use "default" to scale with the buffer font size, or {"custom": <pixels>} for a fixed width.
     ///

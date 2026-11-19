@@ -351,6 +351,26 @@ impl Editor {
         cx.notify();
     }
 
+    pub(super) fn toggle_coverage(
+        &mut self,
+        _: &ToggleCoverage,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_coverage = Some(!self.shows_coverage(cx));
+        cx.notify();
+    }
+
+    pub fn set_show_coverage(&mut self, show_coverage: bool, cx: &mut Context<Self>) {
+        self.show_coverage = Some(show_coverage);
+        cx.notify();
+    }
+
+    pub(super) fn shows_coverage(&self, cx: &App) -> bool {
+        self.show_coverage
+            .unwrap_or_else(|| EditorSettings::get_global(cx).gutter.coverage)
+    }
+
     pub(super) fn should_show_indent_guides(&self) -> Option<bool> {
         self.show_indent_guides
     }

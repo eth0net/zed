@@ -79,6 +79,15 @@ pub struct ProjectSettings {
 
     /// Configuration for session-related features
     pub session: SessionSettings,
+
+    /// Configuration for the code coverage gutter.
+    pub coverage: CoverageSettings,
+}
+
+#[derive(Clone, Debug)]
+pub struct CoverageSettings {
+    /// Report paths, relative to each worktree root.
+    pub reports: Vec<String>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -889,6 +898,9 @@ impl Settings for ProjectSettings {
             git: git_settings,
             node: content.node.clone().unwrap().into(),
             load_direnv: project.load_direnv.clone().unwrap(),
+            coverage: CoverageSettings {
+                reports: project.coverage.clone().unwrap().reports.unwrap(),
+            },
             session: SessionSettings {
                 restore_unsaved_buffers: content.session.unwrap().restore_unsaved_buffers.unwrap(),
                 trust_all_worktrees: content.session.unwrap().trust_all_worktrees.unwrap(),

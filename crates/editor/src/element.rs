@@ -64,6 +64,7 @@ use multi_buffer::{
 };
 
 use project::{
+    coverage_store::LineCoverage,
     debugger::breakpoint_store::{Breakpoint, BreakpointSessionState},
     project_settings::{InlineBlameLocation, ProjectSettings},
 };
@@ -606,6 +607,7 @@ impl EditorElement {
         register_action(editor, window, Editor::toggle_breadcrumb);
         register_action(editor, window, Editor::toggle_line_numbers);
         register_action(editor, window, Editor::toggle_relative_line_numbers);
+        register_action(editor, window, Editor::toggle_coverage);
         register_action(editor, window, Editor::toggle_indent_guides);
         register_action(editor, window, Editor::toggle_inline_values);
         register_action(editor, window, Editor::toggle_edit_predictions);
@@ -2852,6 +2854,69 @@ impl EditorElement {
                 Some((toggle, origin))
             })
             .collect()
+    }
+
+    /// Places a thin bar for each covered or uncovered row just right of the line numbers,
+    /// clear of the fold toggles centered in the same padding.
+    fn layout_coverage_markers(
+        &self,
+        gutter: &Gutter,
+        cx: &mut App,
+    ) -> Vec<(Bounds<Pixels>, LineCoverage)> {
+        let (coverage_store, multi_buffer) = {
+            let editor = self.editor.read(cx);
+            if !editor.shows_coverage(cx) {
+                return Vec::new();
+            }
+            let Some(coverage_store) = editor
+                .project()
+                .and_then(|project| project.read(cx).coverage_store())
+            else {
+                return Vec::new();
+            };
+            (coverage_store, editor.buffer().clone())
+        };
+        let line_height = gutter.line_height;
+        let gap = (line_height * 0.1).round();
+        let width = (line_height * 0.15).round().max(px(2.));
+        if gutter.dimensions.right_padding < gap + width {
+            return Vec::new();
+        }
+        let x = gutter.dimensions.width - gutter.dimensions.right_padding + gap;
+
+        let mut buffer_coverage = HashMap::default();
+        let mut markers = Vec::new();
+        for (ix, row_info) in gutter.row_infos.iter().enumerate() {
+            if row_info
+                .diff_status
+                .is_some_and(|status| status.is_deleted())
+            {
+                continue;
+            }
+            let (Some(buffer_id), Some(buffer_row)) = (
+                row_info.buffer_id,
+                row_info.buffer_row.or(row_info.wrapped_buffer_row),
+            ) else {
+                continue;
+            };
+            let coverage = buffer_coverage.entry(buffer_id).or_insert_with(|| {
+                let buffer = multi_buffer.read(cx).buffer(buffer_id)?;
+                coverage_store.update(cx, |store, cx| store.buffer_coverage(&buffer, cx))
+            });
+            let Some(status) = coverage
+                .as_ref()
+                .and_then(|coverage| coverage.get(&buffer_row))
+            else {
+                continue;
+            };
+            let display_row = gutter.range.start.0 + ix as u32;
+            let y = line_height * (display_row as f64 - gutter.scroll_position.y) as f32;
+            markers.push((
+                Bounds::new(gutter.hitbox.origin + point(x, y), size(width, line_height)),
+                *status,
+            ));
+        }
+        markers
     }
 
     fn layout_line_numbers(
@@ -5391,6 +5456,21 @@ impl EditorElement {
                     window.set_cursor_style(CursorStyle::PointingHand, hitbox);
                 }
             }
+        }
+    }
+
+    fn paint_coverage_markers(&self, layout: &EditorLayout, window: &mut Window, cx: &mut App) {
+        if layout.coverage_markers.is_empty() {
+            return;
+        }
+        let status = cx.theme().status();
+        for (bounds, coverage) in &layout.coverage_markers {
+            let color = match coverage {
+                LineCoverage::Covered => status.success,
+                LineCoverage::Partial => status.warning,
+                LineCoverage::Uncovered => status.error,
+            };
+            window.paint_quad(fill(*bounds, color));
         }
     }
 
@@ -9090,6 +9170,7 @@ impl Element for EditorElement {
                         window,
                         cx,
                     );
+                    let coverage_markers = self.layout_coverage_markers(&gutter, cx);
 
                     let mut expand_toggles =
                         window.with_element_namespace("expand_toggles", |window| {
@@ -10057,6 +10138,7 @@ impl Element for EditorElement {
                         document_colors,
                         line_elements,
                         line_numbers,
+                        coverage_markers,
                         blamed_display_rows,
                         inline_diagnostics,
                         point_diagnostic_underline_offset,
@@ -10157,6 +10239,7 @@ impl Element for EditorElement {
                         if layout.gutter_hitbox.size.width > Pixels::ZERO {
                             self.paint_blamed_display_rows(layout, window, cx);
                             self.paint_line_numbers(layout, window, cx);
+                            self.paint_coverage_markers(layout, window, cx);
                         }
 
                         self.paint_text(layout, window, cx);
@@ -10265,6 +10348,7 @@ pub struct EditorLayout {
     highlighted_rows: BTreeMap<DisplayRow, LineHighlight>,
     line_elements: SmallVec<[AnyElement; 1]>,
     line_numbers: Arc<HashMap<MultiBufferRow, LineNumberLayout>>,
+    coverage_markers: Vec<(Bounds<Pixels>, LineCoverage)>,
     display_hunks: Vec<(DisplayDiffHunk, Option<Hitbox>)>,
     blamed_display_rows: Option<Vec<AnyElement>>,
     inline_diagnostics: HashMap<DisplayRow, AnyElement>,
@@ -11748,6 +11832,110 @@ mod tests {
             snapshot: snapshot,
             row_infos: &ROW_INFOS,
         }
+    }
+
+    #[gpui::test]
+    async fn test_layout_coverage_markers(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            util::path!("/project"),
+            serde_json::json!({ "src": { "lib.rs": "one\ntwo\nthree\nfour\n" } }),
+        )
+        .await;
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        fs.insert_file(
+            util::path!("/project/lcov.info"),
+            "SF:src/lib.rs\nDA:1,1\nDA:2,0\nDA:3,1\nBRDA:3,0,0,1\nBRDA:3,0,1,0\nend_of_record\n"
+                .into(),
+        )
+        .await;
+        let project = project::Project::test(fs, [util::path!("/project").as_ref()], cx).await;
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(util::path!("/project/src/lib.rs"), cx)
+            })
+            .await
+            .unwrap();
+        let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
+        let window = cx.add_window(|window, cx| {
+            Editor::new(EditorMode::full(), buffer, Some(project), window, cx)
+        });
+        cx.run_until_parked();
+
+        let editor = window.root(cx).unwrap();
+        let style = editor.update(cx, |editor, cx| editor.style(cx).clone());
+        let line_height = window
+            .update(cx, |_, window, _| {
+                style.text.line_height_in_pixels(window.rem_size())
+            })
+            .unwrap();
+        let element = EditorElement::new(&editor, style);
+        let dimensions = GutterDimensions {
+            right_padding: px(40.),
+            width: px(80.),
+            ..GutterDimensions::default()
+        };
+        let hitbox = placeholder_hitbox();
+        let markers = |cx: &mut TestAppContext| {
+            let snapshot = window
+                .update(cx, |editor, window, cx| editor.snapshot(window, cx))
+                .unwrap();
+            let rows = snapshot.max_point().row().0 + 1;
+            let row_infos = snapshot
+                .row_infos(DisplayRow(0))
+                .take(rows as usize)
+                .collect::<Vec<_>>();
+            let gutter = Gutter {
+                line_height,
+                range: DisplayRow(0)..DisplayRow(rows),
+                scroll_position: gpui::Point::default(),
+                dimensions: &dimensions,
+                hitbox: &hitbox,
+                snapshot: &snapshot,
+                row_infos: &row_infos,
+            };
+            cx.update_window(*window, |_, _, cx| {
+                element
+                    .layout_coverage_markers(&gutter, cx)
+                    .into_iter()
+                    .map(|(bounds, coverage)| {
+                        assert_eq!(bounds.size.height, line_height);
+                        assert!(
+                            bounds.left() > dimensions.width - dimensions.right_padding,
+                            "markers sit right of the line numbers"
+                        );
+                        ((bounds.top() / line_height).round() as u32, coverage)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap()
+        };
+
+        use LineCoverage::*;
+        assert_eq!(markers(cx), [(0, Covered), (1, Uncovered), (2, Partial)]);
+
+        window
+            .update(cx, |editor, window, cx| {
+                editor.change_selections(Default::default(), window, cx, |selections| {
+                    selections.select_ranges([Point::new(0, 0)..Point::new(0, 0)])
+                });
+                editor.handle_input("zero\n", window, cx);
+            })
+            .unwrap();
+        assert_eq!(
+            markers(cx),
+            [(1, Covered), (2, Uncovered), (3, Partial)],
+            "markers follow the lines they describe"
+        );
+
+        window
+            .update(cx, |editor, window, cx| {
+                editor.toggle_coverage(&crate::actions::ToggleCoverage, window, cx)
+            })
+            .unwrap();
+        assert_eq!(markers(cx), []);
     }
 
     // Regression test for https://github.com/zed-industries/zed/issues/48141.
