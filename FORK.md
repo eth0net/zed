@@ -24,6 +24,7 @@ them, and is what gets built.
 | `stable-window-state-key`              | —           | not yet proposed |
 | `git-graph-open-tags`                  | —           | not yet proposed |
 | `reopen-closed-window`                 | —           | not yet proposed |
+| `coverage-gutter`                      | #19400      | fork-only        |
 | `release-channel-fork`                 | —           | fork-only        |
 
 `stable-window-state-key` builds on `restore-interrupted-session`,
